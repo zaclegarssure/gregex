@@ -73,10 +73,11 @@ fn main() {
             if input == "exit" {
                 break;
             }
-            match jitted.find(input) {
+            match jitted.find_captures(input) {
                 Some(m) => {
-                    println!("Matched: {}", m.slice(),);
+                    println!("Matched: {}", m.group0().slice(),);
                 }
+
                 None => println!("No match."),
             }
         }

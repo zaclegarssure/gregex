@@ -205,12 +205,10 @@ impl Regex for JittedRegex {
             return None;
         }
 
-        let mut spans = Vec::with_capacity(self.register_count / 2);
+        let mut spans = vec![Span::invalid(); self.register_count / 2];
         let mut i = 0;
         while i < self.register_count {
-            if result[i] == usize::MAX {
-                spans[i / 2] = Span::invalid();
-            } else {
+            if usize::MAX != result[i] {
                 spans[i / 2] = Span::from(result[i]..result[i + 1]);
             }
             i += 2;

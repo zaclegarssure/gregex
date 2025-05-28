@@ -154,4 +154,11 @@ impl<'s> Captures<'s> {
     pub fn new(subject: &'s str, spans: Box<[Span]>) -> Self {
         Self { subject, spans }
     }
+
+    pub fn group_len(&self) -> usize {
+        self.spans.len()
+    }
+
+    // TODO: Add an iterator over groups
+    // and one over all matched groups maybe?
 }
