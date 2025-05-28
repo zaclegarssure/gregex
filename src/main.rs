@@ -75,12 +75,7 @@ fn main() {
             }
             match jitted.find(input) {
                 Some(m) => {
-                    println!(
-                        "Matched: {}, index: {} {}",
-                        m.slice(),
-                        m.span.from,
-                        m.span.to
-                    );
+                    println!("Matched: {}", m.slice(),);
                 }
                 None => println!("No match."),
             }

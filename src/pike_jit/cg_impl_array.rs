@@ -75,22 +75,13 @@ impl CGImpl for CGImplArray {
         for i in 0..jit.register_count {
             // TODO: As always fix this offsets
             let offset = (i*ptr_size!()) as i32;
-            if i == 1 {
-                __!(jit.ops,
-                 // This is result_len
-                  cmp input_pos, offset
-                ; jbe >return_
-                ; mov [reg2 + offset], input_pos
-                )
-            } else {
-                __!(jit.ops,
-                 // This is result_len
-                  cmp input_pos, offset
-                ; jbe >return_
-                ; mov reg1, [curr_thd_data + offset]
-                ; mov [reg2 + offset], reg1
-                )
-            }
+            __!(jit.ops,
+              // This is result_len
+              cmp input_len, (i as u32).cast_signed()
+            ; jbe >return_
+            ; mov reg1, [curr_thd_data + offset]
+            ; mov [reg2 + offset], reg1
+            )
         }
         }
         ; return_:
