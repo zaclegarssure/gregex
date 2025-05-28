@@ -1,14 +1,14 @@
 use std::io::{self, Write};
 
+use regex_jit_prototype::Regex;
 use regex_jit_prototype::pike_bytecode::Compiler;
 use regex_jit_prototype::pike_jit::PikeJIT;
 use regex_jit_prototype::pike_jit::cg_impl_array::CGImplArray;
 use regex_jit_prototype::pike_jit::cg_impl_register::CGImplReg;
-use regex_jit_prototype::pike_vm::PikeVM;
 use regex_syntax::Parser;
 
 fn main() {
-    println!("PikeVM Regex REPL");
+    println!("Gregex REPL");
     println!("Type an empty pattern to exit.");
 
     loop {
@@ -42,17 +42,26 @@ fn main() {
             }
         };
 
-        //let vm = PikeVM::new(bytecode, capture_count);
-        let jitted = match PikeJIT::compile::<CGImplArray>(&bytecode, register_count) {
-            Ok(jitted) => jitted,
-            Err(e) => {
-                println!("Jit error: {e:?}");
-                continue;
+        let jitted = if capture_count > 0 {
+            match PikeJIT::compile::<CGImplArray>(&bytecode, register_count) {
+                Ok(jitted) => jitted,
+                Err(e) => {
+                    println!("Jit error: {e:?}");
+                    continue;
+                }
+            }
+        } else {
+            match PikeJIT::compile::<CGImplReg>(&bytecode, register_count) {
+                Ok(jitted) => jitted,
+                Err(e) => {
+                    println!("Jit error: {e:?}");
+                    continue;
+                }
             }
         };
 
         loop {
-            println!("Type return to go back to the regex prompt.");
+            println!("Type exit to go back to the regex prompt.");
             print!("input> ");
             io::stdout().flush().unwrap();
             let mut input = String::new();
@@ -61,19 +70,12 @@ fn main() {
                 continue;
             }
             let input = input.trim();
-            if input == "return" {
+            if input == "exit" {
                 break;
             }
-            match jitted.exec(input) {
+            match jitted.find(input) {
                 Some(m) => {
-                    println!("Matched!");
-                    for i in 0..capture_count + 1 {
-                        if let Some(s) = m.get(i) {
-                            println!("Group {i}: {:?}", s);
-                        } else {
-                            println!("Group {i}: None");
-                        }
-                    }
+                    println!("Matched: {}", m.slice());
                 }
                 None => println!("No match."),
             }

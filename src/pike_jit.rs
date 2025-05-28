@@ -1,10 +1,19 @@
-use std::mem;
+use std::{
+    alloc::{self, Layout},
+    mem,
+};
 
 use cg_implementation::CGImpl;
-use dynasmrt::{DynamicLabel, DynasmApi, DynasmLabelApi, dynasm, x64::Assembler};
-use regex_syntax::hir::Class;
+use dynasmrt::{
+    AssemblyOffset, DynamicLabel, DynasmApi, DynasmLabelApi, ExecutableBuffer, dynasm,
+    x64::Assembler,
+};
 
-use crate::{pike_bytecode::Instruction, regexp_match::Match};
+use crate::{
+    pike_bytecode::Instruction,
+    regex::Regex,
+    util::{Input, Match},
+};
 
 macro_rules! __ {
     ($ops: expr, $($t:tt)*) => {
@@ -12,6 +21,7 @@ macro_rules! __ {
         ; .arch x64
         ; .alias retval, rax
         ; .alias curr_thd_data, rax
+        ; .alias span_end, rbx
         ; .alias mem, r8
         ; .alias curr_char, ecx
         ; .alias input_pos, rdx
@@ -44,9 +54,13 @@ macro_rules! cst {
 cst!(ptr_size, 8);
 cst!(frame_ptr_offset, 0);
 cst!(return_addr_offset, frame_ptr_offset!() + ptr_size!());
+cst!(span_start_offset, return_addr_offset!() + ptr_size!());
+cst!(span_end_offset, span_start_offset!() + ptr_size!());
+cst!(return_on_accept, span_end_offset!() + ptr_size!());
 cst!(result_offset, frame_ptr_offset!() - ptr_size!());
 cst!(result_length_offset, result_offset!() - ptr_size!());
-cst!(saved_r12_offset, result_length_offset!() - ptr_size!());
+cst!(saved_rbx_offset, result_length_offset!() - ptr_size!());
+cst!(saved_r12_offset, saved_rbx_offset!() - ptr_size!());
 cst!(saved_r13_offset, saved_r12_offset!() - ptr_size!());
 cst!(saved_r14_offset, saved_r13_offset!() - ptr_size!());
 cst!(saved_r15_offset, saved_r14_offset!() - ptr_size!());
@@ -59,60 +73,226 @@ pub mod cg_impl_array;
 pub mod cg_impl_register;
 pub mod cg_implementation;
 
+#[derive(Debug)]
 pub struct JittedRegex {
-    code: dynasmrt::ExecutableBuffer,
-    start: dynasmrt::AssemblyOffset,
+    code: ExecutableBuffer,
+    start: AssemblyOffset,
+    start_anchored: AssemblyOffset,
     register_count: usize,
     initial_mem_size: usize,
-    reusable_mem: Option<Box<[u8]>>,
+    visited_set_size: usize,
+}
+
+/// State used by the jitted code for execution.
+/// It is basically a Vec<u8>, but since it is shared between the jitted
+/// code and the rust code we need something lower level, and repr(C)
+#[derive(Debug)]
+#[repr(C)]
+pub struct State {
+    mem: *mut u8,
+    mem_len: usize,
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        // SAFETY: The pointer is owned.
+        unsafe {
+            alloc::dealloc(self.mem, Layout::array::<u8>(self.mem_len).unwrap());
+        }
+    }
+}
+
+impl Clone for State {
+    fn clone(&self) -> Self {
+        let layout = Layout::array::<u8>(self.mem_len).unwrap();
+        // SAFETY:
+        // The allocation has nothing in particular.
+        // The memcopy works because both pointers are from two different
+        // allocations (therefore non overlapping). And they were both allocated
+        // with the same length.
+        let mem = unsafe {
+            let mem = alloc::alloc(layout);
+            std::ptr::copy_nonoverlapping(self.mem, mem, self.mem_len);
+            mem
+        };
+
+        Self {
+            mem,
+            mem_len: self.mem_len,
+        }
+    }
+}
+
+// SAFETY:
+// State is basically a Vec.
+unsafe impl Send for State {}
+
+impl State {
+    /// Allocate a new State of the given size in bytes.
+    pub fn new(mem_len: usize) -> Self {
+        let layout = Layout::array::<u8>(mem_len).unwrap();
+        // SAFETY: That's just an allocation.
+        let mem = unsafe { alloc::alloc_zeroed(layout) };
+        if mem.is_null() {
+            panic!()
+        }
+        Self { mem, mem_len }
+    }
+
+    /// Ensure the given state can hold the given number of bytes,
+    /// by reallocating if it is too small.
+    pub fn ensure_capacity(&mut self, mem_len: usize) {
+        if mem_len > self.mem_len {
+            let layout = Layout::array::<u8>(self.mem_len).unwrap();
+            let new_mem = unsafe { alloc::realloc(self.mem, layout, mem_len) };
+
+            if new_mem.is_null() {
+                panic!()
+            }
+
+            self.mem = new_mem;
+            self.mem_len = mem_len;
+        }
+    }
+
+    /// Reset the state for the given regex.
+    /// Called before executing.
+    pub fn reset(&mut self, pikejit: &JittedRegex) {
+        self.ensure_capacity(pikejit.initial_mem_size);
+
+        // SAFETY: TODO
+        unsafe {
+            std::slice::from_raw_parts_mut(self.mem, pikejit.visited_set_size).fill(0);
+        }
+    }
+}
+
+extern "sysv64" fn _ensure_capacity(state: *mut State, new_capacity: usize) -> *mut State {
+    // SAFETY: TODO
+    unsafe {
+        state
+            .as_mut()
+            .unwrap_unchecked()
+            .ensure_capacity(new_capacity);
+    }
+    state
+}
+
+impl Regex for JittedRegex {
+    fn find<'s>(&self, input: impl Into<Input<'s>>) -> Option<Match<'s>> {
+        let input = input.into();
+        let mut state = self.new_sate();
+        let mut result = [0, 0];
+        let has_match = self.exec_internal(&input, &mut state, &mut result);
+        if !has_match {
+            return None;
+        }
+
+        Some(Match::new(input.subject, result[0]..result[1]))
+    }
+
+    fn find_all<'s>(&self, input: impl Into<Input<'s>>) -> impl Iterator<Item = Match<'s>> {
+        FindAll(self, input.into(), self.new_sate(), [0, 0])
+    }
+}
+
+struct FindAll<'r, 's>(&'r JittedRegex, Input<'s>, State, [usize; 2]);
+
+impl<'r, 's> Iterator for FindAll<'r, 's> {
+    type Item = Match<'s>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let Self(regex, input, state, result) = self;
+        if !input.span.valid() {
+            return None;
+        }
+
+        // Note: Here we can reuse state without reinitializing because ... TODO
+        let has_match = regex.exec_internal(input, state, result);
+        if !has_match {
+            return None;
+        }
+
+        let span = result[0]..result[1];
+        let match_ = Match::new(input.subject, span);
+
+        input.span.from = match_.next_match_start();
+
+        Some(match_)
+    }
 }
 
 impl JittedRegex {
-    pub fn exec<'s>(&self, subjetc: &'s str) -> Option<Match<'s>> {
-        let f: extern "sysv64" fn(*const u8, u64, *mut i64, u64, *mut u8) -> u8 =
-            unsafe { mem::transmute(self.code.ptr(self.start)) };
-        let mut result = vec![-1; self.register_count];
-        let mut mem = vec![0; self.initial_mem_size];
-        if f(
-            subjetc.as_ptr(),
-            subjetc.len() as u64,
-            result.as_mut_ptr(),
-            self.register_count as u64,
-            mem.as_mut_ptr(),
-        ) > 0
-        {
-            let mut indices = vec![None; self.register_count];
-            for (i, pair) in result.chunks(2).enumerate() {
-                let lower = pair[0];
-                let upper = pair[1];
-                if upper >= 0 && lower >= 0 {
-                    indices[2 * i] = Some(lower as usize);
-                    indices[2 * i + 1] = Some(upper as usize);
-                } else {
-                    println!("lower = {lower} upper = {upper}");
-                }
-            }
-            Some(Match::new(subjetc, indices.into_boxed_slice()))
-        } else {
-            None
+    fn new_sate(&self) -> State {
+        State::new(self.initial_mem_size)
+    }
+
+    fn exec_internal<'s>(
+        &self,
+        input: &Input<'s>,
+        state: &mut State,
+        result: &mut [usize],
+    ) -> bool {
+        if !input.valid() {
+            return false;
         }
+
+        let Input {
+            subject,
+            span,
+            first_match,
+            anchored,
+        } = input;
+
+        // API:
+        // subject: *const u8 -> rdi
+        // subject_len: u64 -> rsi
+        // result: *mut u64 -> rdx
+        // result_len: u64 -> rcx
+        // mem: *mut u8 -> r8
+        // mem_len: u64 -> r9
+        // from: u64 -> rbp+8
+        // to: u64 -> rbp+16
+        // first_match: u64 -> rbp+24
+        type ExecSig =
+            extern "sysv64" fn(*const u8, u64, *mut u64, u64, *mut u8, u64, u64, u64, u64) -> u8;
+
+        let f: ExecSig = unsafe {
+            if !anchored {
+                mem::transmute::<*const u8, ExecSig>(self.code.ptr(self.start))
+            } else {
+                mem::transmute::<*const u8, ExecSig>(self.code.ptr(self.start_anchored))
+            }
+        };
+
+        f(
+            subject.as_ptr(),
+            subject.len() as u64,
+            result.as_mut_ptr() as *mut u64,
+            result.len() as u64,
+            state.mem,
+            state.mem_len as u64,
+            span.from as u64,
+            span.to as u64,
+            *first_match as u64,
+        ) > 0
     }
 }
 
 pub struct PikeJIT {
     ops: Assembler,
-    // Might just always be 0 idk
-    start: dynasmrt::AssemblyOffset,
     instr_labels: Vec<DynamicLabel>,
     register_count: usize,
     step_next_active: DynamicLabel,
     next_iter: DynamicLabel,
+    next_iter_with_search: DynamicLabel,
     fetch_next_char: DynamicLabel,
 }
 
 #[derive(Debug)]
 pub enum CompileError {
     FailedToCreateAssembler,
+    FailedToFinalizeOps,
 }
 
 impl PikeJIT {
@@ -120,28 +300,26 @@ impl PikeJIT {
     // Those 8 bytes could be compressed into 4 by saving
     // just the offset of the code location.
     const THREAD_SIZE: i32 = 16;
+
     pub fn compile<CG: CGImpl>(
         bytecode: &[Instruction],
         register_count: usize,
     ) -> Result<JittedRegex, CompileError> {
         let mut ops = Assembler::new().map_err(|_| CompileError::FailedToCreateAssembler)?;
         let instr_labels = Vec::from_iter(bytecode.iter().map(|_| ops.new_dynamic_label()));
-        let start = ops.offset();
         let step_next_active = ops.new_dynamic_label();
         let next_iter = ops.new_dynamic_label();
+        let next_iter_with_search = ops.new_dynamic_label();
         let fetch_next_char = ops.new_dynamic_label();
         let mut compiler = Self {
             ops,
-            start,
             instr_labels,
             register_count,
             step_next_active,
             next_iter,
+            next_iter_with_search,
             fetch_next_char,
         };
-        let ops = &mut compiler.ops;
-        // In practice we could call directly start_label when calling the jitted code
-        __!(ops, jmp ->start_label);
         for (i, instr) in bytecode.iter().enumerate() {
             compiler.compile_instruction::<CG>(i, instr);
         }
@@ -150,12 +328,18 @@ impl PikeJIT {
 
     fn assemble<CG: CGImpl>(mut self) -> Result<JittedRegex, CompileError> {
         let label0 = self.instr_labels[0];
-        // API: exec(input: rdi *u8, input_len: rsi usize, result: rdx *u64, result_len: rcx usize, mem: r8 u8*)
-        //          -> (match_count: rax u64)
+        let start;
+        let start_anchored;
         __!(self.ops,
-         ->start_label:
+         ; start_anchored = self.ops.offset()
          ;; self.prologue::<CG>()
          ;; self.push_active_sentinel(self.next_iter)
+         ;; CG::alloc_thread(&mut self)
+         ;; self.push_active(label0)
+         ; jmp =>self.fetch_next_char
+         ;; start = self.ops.offset()
+         ;; self.prologue::<CG>()
+         ;; self.push_active_sentinel(self.next_iter_with_search)
          ;; CG::alloc_thread(&mut self)
          ;; self.push_active(label0)
          ; =>self.fetch_next_char
@@ -168,16 +352,39 @@ impl PikeJIT {
          // use it to encode the end of input. This works because both the regex
          // and the input must only contain valid utf-8 chars.
          ; mov curr_char, u32::MAX.cast_signed()
+
+         // The dispatch loop, simply pop active and dispatch
          ; =>self.step_next_active
          ;; self.pop_active()
          ; jmp reg1
+
+         // Called at then end of an iteration, meaning we step through all
+         // threads in active, or we reached an accepting states (and therefore
+         // emptied the active queue)
+         // This version is used in unanchored searches, where we spawn a new
+         // thread everytime we start a new iteration
+         ; =>self.next_iter_with_search
+         ; cmp input_pos, span_end
+         ; je >return_result
+         ; mov curr_top, [rbp + (next_tail_init_offset!())]
+         ; cmp curr_top, next_tail
+         ; je >return_result
+         ;; CG::alloc_thread(&mut self)
+         ;; self.push_next(label0)
+         ;; self.push_next_sentinel(self.next_iter_with_search)
+         // Share at least the end with next_iter
+         ; jmp >next
+         // Same as above, but does not spawn a new thread. Used when doing
+         // anchored searches, or when an accpeting state has already been
+         // reached.
          ; =>self.next_iter
-         ; cmp input_pos, input_len
+         ; cmp input_pos, span_end
          ; je >return_result
          ; mov curr_top, [rbp + (next_tail_init_offset!())]
          ; cmp curr_top, next_tail
          ; je >return_result
          ;; self.push_next_sentinel(self.next_iter)
+         ; next:
          ; mov next_tail, [rbp + (curr_top_init_offset!())]
          ; mov [rbp + (curr_top_init_offset!())], curr_top
          ; mov [rbp + (next_tail_init_offset!())], next_tail
@@ -188,14 +395,17 @@ impl PikeJIT {
          ;; CG::at_code_end(&mut self)
         );
 
+        let visited_set_size = self.visited_set_size();
         let initial_mem_size = self.initial_mem_size::<CG>();
         let code = self.ops.finalize().unwrap();
+
         Ok(JittedRegex {
             code,
-            start: self.start,
+            start,
+            start_anchored,
             register_count: self.register_count,
+            visited_set_size,
             initial_mem_size,
-            reusable_mem: None,
         })
     }
 
@@ -281,30 +491,29 @@ impl PikeJIT {
         // Push result_length
         ; push rcx
         // Push saved registers
+        ; push rbx
         ; push r12
         ; push r13
         ; push r14
         ; push r15
-        // Okay so push immediate does not support 64bits value with
-        // this library, therefore I'm afraid it will not properly decrement
-        // rsp enough to reserve the right amount of space.
-        // Therefore we do it manually.
+        // Initialize input_pos and input_end
+        ; mov input_pos, [rbp + span_start_offset!()]
+        ; mov span_end, [rbp + span_end_offset!()]
+        // Okay so push immediate does not support 64bits value with this
+        // library. Therefore we do it manually.
         ; sub rsp, (4*ptr_size!())
-        // This forces the initial memory to be roughly 2GB, in a quite artificial way
-        // we could easily remove this limit.
-        // First instead of casting we should bit-cast to i32 to gain 1 bit
-        // Also we should use movabsq
-        ; lea reg1, [mem + ((self.queue_start() + (self.queue_size()/2)) as i32)]
-        ; mov QWORD [rbp + (next_tail_init_offset!())], reg1
-        ; lea reg1, [mem + ((self.queue_start() + ((3*self.queue_size())/2)) as i32)]
-        ; mov QWORD [rbp + (curr_top_init_offset!())], reg1
-        ; mov QWORD [rbp + (mem_size_offset!())], (self.initial_mem_size::<CG>() as i32)
-        // Initialize curr_top and next_tail
-        ; mov curr_top, (self.queue_start() as i32)
-        ; add curr_top, mem
-        ; mov next_tail, [rbp + (next_tail_init_offset!())]
-        // Initialize input_pos
-        ; mov input_pos, 0
+        // Initialize curr_top, next_tail and saved them on the stack for easier
+        // swapping. Okay movabs is broken
+        // TODO FIX THIS
+        ; mov rax, ((self.queue_start() + (self.queue_size()/2)) as i32)
+        ; add rax, mem
+        ; mov QWORD [rbp + (curr_top_init_offset!())], rax
+        ; mov curr_top, rax
+        ; mov rax, ((self.queue_start() + ((3*self.queue_size())/2)) as i32)
+        // TODO: I think we need to decrement this to let a space for the sentinel
+        ; add rax, mem
+        ; mov QWORD [rbp + (next_tail_init_offset!())], rax
+        ; mov next_tail, rax
         ;; CG::initialize_cg_region(self)
         )
     }
@@ -332,7 +541,8 @@ impl PikeJIT {
 
     fn epilogue(&mut self) {
         __!(self.ops,
-          mov r12, [rbp + saved_r12_offset!()]
+          mov rbx, [rbp + saved_rbx_offset!()]
+        ; mov r12, [rbp + saved_r12_offset!()]
         ; mov r13, [rbp + saved_r13_offset!()]
         ; mov r14, [rbp + saved_r14_offset!()]
         ; mov r15, [rbp + saved_r15_offset!()]
@@ -347,7 +557,9 @@ impl PikeJIT {
         match instr {
             Instruction::Consume(c) => self.compile_consume::<CG>(i, *c),
             Instruction::ConsumeAny => self.compile_consume_any(i),
-            Instruction::ConsumeClass(class) => self.compile_consume_class::<CG>(i, class),
+            Instruction::ConsumeClass(class) => {
+                self.compile_consume_class::<CG>(i, class.as_slice())
+            }
             Instruction::Fork2(a, b) => self.compile_fork::<CG>(&[*a, *b]),
             Instruction::ForkN(items) => self.compile_fork::<CG>(items.as_slice()),
             Instruction::Jmp(target) => self.compile_jump(*target),
@@ -380,24 +592,11 @@ impl PikeJIT {
         __!(self.ops, jmp =>self.step_next_active)
     }
 
-    fn compile_consume_class<CG: CGImpl>(&mut self, i: usize, class: &Class) {
+    fn compile_consume_class<CG: CGImpl>(&mut self, i: usize, class: &[(char, char)]) {
         let fail = self.ops.new_dynamic_label();
         let next = self.ops.new_dynamic_label();
-        match class {
-            Class::Unicode(class_unicode) => {
-                for class in class_unicode.iter() {
-                    let from = class.start();
-                    let to = class.end();
-                    self.compile_consume_range(next, fail, from, to);
-                }
-            }
-            Class::Bytes(class_bytes) => {
-                for class in class_bytes.iter() {
-                    let from = class.start();
-                    let to = class.end();
-                    self.compile_consume_range(next, fail, from as char, to as char);
-                }
-            }
+        for (from, to) in class {
+            self.compile_consume_range(next, fail, *from, *to);
         }
         __!(self.ops,
           =>fail
@@ -449,7 +648,15 @@ impl PikeJIT {
 
     fn compile_accept<CG: CGImpl>(&mut self) {
         CG::accept_curr_thread(self);
-        __!(self.ops, jmp => self.next_iter);
+        __!(self.ops,
+          mov reg1, [rbp + return_on_accept!()]
+        ; test reg1, reg1
+        ; jnz >return_result
+        // Note: Here we jumpt to next_iter without starting a new thread
+        ; jmp => self.next_iter
+        ; return_result:
+        ;; CG::return_result(self)
+        )
     }
 
     /// Decode the next character in the input in curr_char, and write the

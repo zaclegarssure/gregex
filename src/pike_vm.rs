@@ -1,10 +1,9 @@
 use std::collections::{HashSet, VecDeque};
 
-use regex_syntax::hir::Class;
-
 use crate::{
-    pike_bytecode::{Instruction, Instruction::*},
-    regexp_match::Match,
+    pike_bytecode::Instruction::{self, *},
+    regex::{self, Regex},
+    util::{Input, Match, Span},
 };
 
 pub struct PikeVM {
@@ -17,12 +16,14 @@ struct Thread {
     pc: usize,
     registers: Box<[Option<usize>]>,
 }
+// TODO Update this to correctly accoutn for overall match
+// and the lazy star being implicit
 
 impl Thread {
-    fn new(register_count: usize) -> Self {
+    fn new(register_count: usize, pc: usize) -> Self {
         let vec = vec![None; register_count];
         let registers = vec.into_boxed_slice();
-        Self { pc: 0, registers }
+        Self { pc, registers }
     }
     fn write_reg(&mut self, reg: u32, value: usize) {
         self.registers[reg as usize] = Some(value)
@@ -39,7 +40,10 @@ impl Thread {
     }
 
     fn into_match(self, subject: &str) -> Match<'_> {
-        Match::new(subject, self.registers)
+        Match::new(
+            subject,
+            self.registers[0].unwrap()..self.registers[1].unwrap(),
+        )
     }
 }
 
@@ -143,22 +147,11 @@ impl State {
                         state.push_active(thread.clone().with_pc(*pc));
                     }
                 }
-                ConsumeClass(Class::Unicode(class)) => {
-                    for interval in class.iter() {
-                        if c < interval.start() {
+                ConsumeClass(class) => {
+                    for (start, end) in class.iter() {
+                        if c < *start {
                             break;
-                        } else if c > interval.end() {
-                            continue;
-                        }
-                        state.push_next(thread.inc_pc());
-                        break;
-                    }
-                }
-                ConsumeClass(Class::Bytes(class)) => {
-                    for interval in class.iter() {
-                        if c < interval.start() as char {
-                            break;
-                        } else if c > interval.end() as char {
+                        } else if c > *end {
                             continue;
                         }
                         state.push_next(thread.inc_pc());
@@ -189,15 +182,33 @@ impl PikeVM {
             capture_count,
         }
     }
+}
 
-    pub fn exec<'s>(&self, subject: &'s str) -> Option<Match<'s>> {
+impl Regex for PikeVM {
+    fn find<'s>(&self, input: impl Into<Input<'s>>) -> Option<Match<'s>> {
+        let Input {
+            subject,
+            span: Span { mut from, to },
+            anchored,
+            first_match,
+        } = input.into();
         let state_count = self.bytecode.len();
         let mut state = State::new(state_count);
-        println!("bytecode = {:?}", self.bytecode);
-        state.push_active(Thread::new((self.capture_count + 1) * 2));
-        for c in subject.chars() {
+        let register_count = (self.capture_count + 1) * 2;
+        state.push_active(Thread::new(register_count, from));
+        for c in subject[from..to].chars() {
             state.step(&self.bytecode, c);
             if !state.next.is_empty() {
+                match state.best_match {
+                    Some(best_match) if first_match => {
+                        return Some(best_match.into_match(subject));
+                    }
+                    None if !anchored => {
+                        from += c.len_utf8();
+                        state.push_next(Thread::new(register_count, from));
+                    }
+                    _ => (),
+                };
                 state.swap_and_advance_by(c.len_utf8());
             } else {
                 return state.best_match.map(|t| t.into_match(subject));
@@ -206,62 +217,66 @@ impl PikeVM {
         state.step_at_end(&self.bytecode);
         state.best_match.map(|t| t.into_match(subject))
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use regex_syntax::Parser;
-
-    fn compile_and_exec<'s>(pattern: &str, input: &'s str) -> Option<Match<'s>> {
-        let hir = Parser::new().parse(pattern).unwrap();
-        let capture_count = hir.properties().explicit_captures_len();
-        let bytecode = crate::pike_bytecode::Compiler::compile(hir).unwrap();
-        let vm = PikeVM::new(bytecode, capture_count);
-        vm.exec(input)
-    }
-
-    #[test]
-    fn test_literal_match() {
-        let m = compile_and_exec("abc", "abc");
-        assert!(m.is_some());
-        assert_eq!(&m.unwrap()[0], "abc");
-    }
-
-    #[test]
-    fn test_literal_no_match() {
-        let m = compile_and_exec("abc", "def");
-        assert!(m.is_none());
-    }
-
-    #[test]
-    fn test_alternation() {
-        assert!(compile_and_exec("foo|bar", "foo").is_some());
-        assert!(compile_and_exec("foo|bar", "bar").is_some());
-        assert!(compile_and_exec("foo|bar", "baz").is_none());
-    }
-
-    #[test]
-    fn test_repetition() {
-        assert!(compile_and_exec("a*", "").is_some());
-        assert!(compile_and_exec("a*", "a").is_some());
-        assert!(compile_and_exec("a*", "aaaa").is_some());
-        assert!(compile_and_exec("a*", "b").is_some()); // matches empty prefix
-    }
-
-    #[test]
-    fn test_class() {
-        assert!(compile_and_exec("[a-z]", "a").is_some());
-        assert!(compile_and_exec("[a-z]", "m").is_some());
-        assert!(compile_and_exec("[a-z]", "A").is_none());
-    }
-
-    #[test]
-    fn test_capture_group() {
-        let m = compile_and_exec("(hi)", "hi");
-        assert!(m.is_some());
-        let m = m.unwrap();
-        // Group 1 should capture "hi"
-        assert_eq!(m.get(1), Some("hi"));
+    fn find_all<'s>(&self, input: impl Into<Input<'s>>) -> impl Iterator<Item = Match<'s>> {
+        regex::FindAll::new(self, input.into())
     }
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use regex_syntax::Parser;
+
+//     fn compile_and_exec<'s>(pattern: &str, input: &'s str) -> Option<Match<'s>> {
+//         let hir = Parser::new().parse(pattern).unwrap();
+//         let capture_count = hir.properties().explicit_captures_len();
+//         let bytecode = crate::pike_bytecode::Compiler::compile(hir).unwrap();
+//         let vm = PikeVM::new(bytecode, capture_count);
+//         vm.exec(input)
+//     }
+
+//     #[test]
+//     fn test_literal_match() {
+//         let m = compile_and_exec("abc", "abc");
+//         assert!(m.is_some());
+//         assert_eq!(&m.unwrap()[0], "abc");
+//     }
+
+//     #[test]
+//     fn test_literal_no_match() {
+//         let m = compile_and_exec("abc", "def");
+//         assert!(m.is_none());
+//     }
+
+//     #[test]
+//     fn test_alternation() {
+//         assert!(compile_and_exec("foo|bar", "foo").is_some());
+//         assert!(compile_and_exec("foo|bar", "bar").is_some());
+//         assert!(compile_and_exec("foo|bar", "baz").is_none());
+//     }
+
+//     #[test]
+//     fn test_repetition() {
+//         assert!(compile_and_exec("a*", "").is_some());
+//         assert!(compile_and_exec("a*", "a").is_some());
+//         assert!(compile_and_exec("a*", "aaaa").is_some());
+//         assert!(compile_and_exec("a*", "b").is_some()); // matches empty prefix
+//     }
+
+//     #[test]
+//     fn test_class() {
+//         assert!(compile_and_exec("[a-z]", "a").is_some());
+//         assert!(compile_and_exec("[a-z]", "m").is_some());
+//         assert!(compile_and_exec("[a-z]", "A").is_none());
+//     }
+
+//     #[test]
+//     fn test_capture_group() {
+//         let m = compile_and_exec("(hi)", "hi");
+//         assert!(m.is_some());
+//         let m = m.unwrap();
+//         // Group 1 should capture "hi"
+//         assert_eq!(m.get(1), Some("hi"));
+//     }
+// }

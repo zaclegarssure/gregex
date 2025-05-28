@@ -6,7 +6,7 @@ use regex_syntax::hir::{Capture, Class, Hir, HirKind, Literal, Repetition};
 pub enum Instruction {
     Consume(char),
     ConsumeAny,
-    ConsumeClass(Class),
+    ConsumeClass(Vec<(char, char)>),
     Fork2(usize, usize),
     ForkN(Vec<usize>),
     Jmp(usize),
@@ -40,18 +40,9 @@ impl Compiler {
         let mut compiler = Compiler {
             bytecode: Vec::new(),
         };
-        compiler.push_lazy_star();
-        compiler.push(WriteReg(0));
         compiler.compile_internal(hir);
-        // Write reg 1 is done implicitely in Accept
         compiler.push(Accept);
         Ok(compiler.bytecode)
-    }
-
-    fn push_lazy_star(&mut self) {
-        self.push(Fork2(3, 1));
-        self.push(ConsumeAny);
-        self.push(Jmp(0));
     }
 
     fn current_pc(&self) -> usize {
@@ -77,7 +68,14 @@ impl Compiler {
                 }
             }
             HirKind::Class(class) => {
-                self.push(ConsumeClass(class));
+                match class {
+                    Class::Unicode(class_unicode) => {
+                        let class = class_unicode.iter().map(|r| (r.start(), r.end())).collect();
+                        self.push(ConsumeClass(class));
+                    }
+                    // We define our regex over unicode only
+                    Class::Bytes(_) => unreachable!(),
+                }
             }
             HirKind::Look(_) => unreachable!(),
             HirKind::Repetition(Repetition {
@@ -134,6 +132,10 @@ impl Compiler {
                     self.compile_internal(hir);
                 }
             }
+            // Quick annoying fun fact for anyone who would read this:
+            // In regex-syntax (rust regex) Alternation means a regex of the form e1|e2|e3,
+            // and concatenation is e1e2e3. In V8 (and I guess JS in general) alternation
+            // means e1e2e3 and disjuction means e1|e2|e3.
             HirKind::Alternation(hirs) => {
                 let length = hirs.len();
                 let mut fork_targets = Vec::with_capacity(length);

@@ -47,8 +47,10 @@ impl CGImpl for CGImplArray {
         Self::write_reg(jit, 1);
         __!(jit.ops,
           mov reg1, [rbp + current_match_offset!()]
+        ; push reg1
         ; mov [rbp + current_match_offset!()], curr_thd_data
         ;; Self::free_all_threads_in_active(jit)
+        ; pop reg1
         ; test reg1, reg1
         ; jz >next
         // TODO Find a way to pass a register to free_curr_thread
