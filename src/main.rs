@@ -1,10 +1,10 @@
 use std::io::{self, Write};
 
-use regex_jit_prototype::Regex;
-use regex_jit_prototype::pike_bytecode::Compiler;
-use regex_jit_prototype::pike_jit::PikeJIT;
-use regex_jit_prototype::pike_jit::cg_impl_array::CGImplArray;
-use regex_jit_prototype::pike_jit::cg_impl_register::CGImplReg;
+use gregex::Regex;
+use gregex::pike_bytecode::Compiler;
+use gregex::pike_jit::PikeJIT;
+use gregex::pike_jit::cg_impl_array::CGImplArray;
+use gregex::pike_jit::cg_impl_register::CGImplReg;
 use regex_syntax::Parser;
 
 fn main() {
@@ -75,7 +75,12 @@ fn main() {
             }
             match jitted.find(input) {
                 Some(m) => {
-                    println!("Matched: {}", m.slice());
+                    println!(
+                        "Matched: {}, index: {} {}",
+                        m.slice(),
+                        m.span.from,
+                        m.span.to
+                    );
                 }
                 None => println!("No match."),
             }

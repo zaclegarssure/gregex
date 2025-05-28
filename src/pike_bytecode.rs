@@ -73,7 +73,7 @@ impl Compiler {
                         let class = class_unicode.iter().map(|r| (r.start(), r.end())).collect();
                         self.push(ConsumeClass(class));
                     }
-                    // We define our regex over unicode only
+                    // We define our regex over unicode only, for now
                     Class::Bytes(_) => unreachable!(),
                 }
             }

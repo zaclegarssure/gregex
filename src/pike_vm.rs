@@ -3,7 +3,7 @@ use std::collections::{HashSet, VecDeque};
 use crate::{
     pike_bytecode::Instruction::{self, *},
     regex::{self, Regex},
-    util::{Input, Match, Span},
+    util::{Captures, Input, Match, Span},
 };
 
 pub struct PikeVM {
@@ -220,6 +220,17 @@ impl Regex for PikeVM {
 
     fn find_all<'s>(&self, input: impl Into<Input<'s>>) -> impl Iterator<Item = Match<'s>> {
         regex::FindAll::new(self, input.into())
+    }
+
+    fn find_captures<'s>(&self, input: impl Into<Input<'s>>) -> Option<Captures<'s>> {
+        todo!()
+    }
+
+    fn find_all_captures<'s>(
+        &self,
+        input: impl Into<Input<'s>>,
+    ) -> impl Iterator<Item = Captures<'s>> {
+        regex::FindAllCaptures::new(self, input.into())
     }
 }
 

@@ -54,8 +54,10 @@ impl<'s> From<&'s str> for Input<'s> {
 }
 
 /// A span in a &str. Similar to [`std::range::Range`], but
-/// implements Copy.
+/// implements Copy. Plus, it implements repr(C) in order
+/// to share it with the jitted code.
 #[derive(Copy, Debug, Clone)]
+#[repr(C)]
 pub struct Span {
     pub from: usize,
     pub to: usize,
@@ -68,6 +70,10 @@ impl Span {
 
     pub fn valid(&self) -> bool {
         self.from <= self.to
+    }
+
+    pub fn invalid() -> Span {
+        Span { from: 1, to: 0 }
     }
 }
 
@@ -125,4 +131,27 @@ impl<'s> Match<'s> {
 pub struct Captures<'s> {
     subject: &'s str,
     spans: Box<[Span]>,
+}
+
+impl<'s> Captures<'s> {
+    pub fn get(&self, group_index: usize) -> Option<Match<'s>> {
+        let span = *self.spans.get(group_index)?;
+        if !span.valid() {
+            return None;
+        }
+
+        Some(Match {
+            subject: self.subject,
+            span,
+        })
+    }
+
+    pub fn group0(&self) -> Match<'s> {
+        // Must always be set
+        self.get(0).unwrap()
+    }
+
+    pub fn new(subject: &'s str, spans: Box<[Span]>) -> Self {
+        Self { subject, spans }
+    }
 }

@@ -67,6 +67,7 @@ impl CGImpl for CGImplArray {
         ; jz >no_match
         ; mov reg2, [rbp + result_offset!()]
         ; add curr_thd_data, mem
+        ; mov input_len, [rbp + result_len_offset!()]
         ;; {
         // We always unroll this loop, but maybe this should depend
         // on the number of capture groups.
@@ -74,12 +75,25 @@ impl CGImpl for CGImplArray {
         for i in 0..jit.register_count {
             // TODO: As always fix this offsets
             let offset = (i*ptr_size!()) as i32;
-            __!(jit.ops,
-              mov reg1, [curr_thd_data + offset]
-            ; mov [reg2 + offset], reg1
-            )
+            if i == 1 {
+                __!(jit.ops,
+                 // This is result_len
+                  cmp input_pos, offset
+                ; jbe >return_
+                ; mov [reg2 + offset], input_pos
+                )
+            } else {
+                __!(jit.ops,
+                 // This is result_len
+                  cmp input_pos, offset
+                ; jbe >return_
+                ; mov reg1, [curr_thd_data + offset]
+                ; mov [reg2 + offset], reg1
+                )
+            }
         }
         }
+        ; return_:
         ; mov rax, 1
         ;; jit.epilogue()
         ; ret

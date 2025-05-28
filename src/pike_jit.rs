@@ -11,8 +11,8 @@ use dynasmrt::{
 
 use crate::{
     pike_bytecode::Instruction,
-    regex::Regex,
-    util::{Input, Match},
+    regex::{FindAllCaptures, Regex},
+    util::{Captures, Input, Match, Span},
 };
 
 macro_rules! __ {
@@ -58,8 +58,8 @@ cst!(span_start_offset, return_addr_offset!() + ptr_size!());
 cst!(span_end_offset, span_start_offset!() + ptr_size!());
 cst!(return_on_accept, span_end_offset!() + ptr_size!());
 cst!(result_offset, frame_ptr_offset!() - ptr_size!());
-cst!(result_length_offset, result_offset!() - ptr_size!());
-cst!(saved_rbx_offset, result_length_offset!() - ptr_size!());
+cst!(result_len_offset, result_offset!() - ptr_size!());
+cst!(saved_rbx_offset, result_len_offset!() - ptr_size!());
 cst!(saved_r12_offset, saved_rbx_offset!() - ptr_size!());
 cst!(saved_r13_offset, saved_r12_offset!() - ptr_size!());
 cst!(saved_r14_offset, saved_r13_offset!() - ptr_size!());
@@ -194,6 +194,38 @@ impl Regex for JittedRegex {
     fn find_all<'s>(&self, input: impl Into<Input<'s>>) -> impl Iterator<Item = Match<'s>> {
         FindAll(self, input.into(), self.new_sate(), [0, 0])
     }
+
+    fn find_captures<'s>(&self, input: impl Into<Input<'s>>) -> Option<Captures<'s>> {
+        // TODO: Improve this
+        let input = input.into();
+        let mut state = self.new_sate();
+        let mut result = vec![0; self.register_count];
+        let has_match = self.exec_internal(&input, &mut state, &mut result);
+        if !has_match {
+            return None;
+        }
+
+        let mut spans = Vec::with_capacity(self.register_count / 2);
+        let mut i = 0;
+        while i < self.register_count {
+            if result[i] == usize::MAX {
+                spans[i / 2] = Span::invalid();
+            } else {
+                spans[i / 2] = Span::from(result[i]..result[i + 1]);
+            }
+            i += 2;
+        }
+
+        Some(Captures::new(input.subject, spans.into_boxed_slice()))
+    }
+
+    fn find_all_captures<'s>(
+        &self,
+        input: impl Into<Input<'s>>,
+    ) -> impl Iterator<Item = Captures<'s>> {
+        // TODO: Replace with a faster custom implementation
+        FindAllCaptures::new(self, input.into())
+    }
 }
 
 struct FindAll<'r, 's>(&'r JittedRegex, Input<'s>, State, [usize; 2]);
@@ -250,7 +282,7 @@ impl JittedRegex {
         // result: *mut u64 -> rdx
         // result_len: u64 -> rcx
         // mem: *mut u8 -> r8
-        // mem_len: u64 -> r9
+        // mem_size : u64 -> r9
         // from: u64 -> rbp+8
         // to: u64 -> rbp+16
         // first_match: u64 -> rbp+24
@@ -335,12 +367,14 @@ impl PikeJIT {
          ;; self.prologue::<CG>()
          ;; self.push_active_sentinel(self.next_iter)
          ;; CG::alloc_thread(&mut self)
+         ;; CG::write_reg(&mut self, 0)
          ;; self.push_active(label0)
          ; jmp =>self.fetch_next_char
          ;; start = self.ops.offset()
          ;; self.prologue::<CG>()
          ;; self.push_active_sentinel(self.next_iter_with_search)
          ;; CG::alloc_thread(&mut self)
+         ;; CG::write_reg(&mut self, 0)
          ;; self.push_active(label0)
          ; =>self.fetch_next_char
          ; cmp input_len, input_pos
@@ -366,10 +400,10 @@ impl PikeJIT {
          ; =>self.next_iter_with_search
          ; cmp input_pos, span_end
          ; je >return_result
+         ; add input_pos, input_inc
          ; mov curr_top, [rbp + (next_tail_init_offset!())]
-         ; cmp curr_top, next_tail
-         ; je >return_result
          ;; CG::alloc_thread(&mut self)
+         ;; CG::write_reg(&mut self, 0)
          ;; self.push_next(label0)
          ;; self.push_next_sentinel(self.next_iter_with_search)
          // Share at least the end with next_iter
@@ -380,7 +414,9 @@ impl PikeJIT {
          ; =>self.next_iter
          ; cmp input_pos, span_end
          ; je >return_result
+         ; add input_pos, input_inc
          ; mov curr_top, [rbp + (next_tail_init_offset!())]
+         // Check if next is empty
          ; cmp curr_top, next_tail
          ; je >return_result
          ;; self.push_next_sentinel(self.next_iter)
@@ -388,7 +424,6 @@ impl PikeJIT {
          ; mov next_tail, [rbp + (curr_top_init_offset!())]
          ; mov [rbp + (curr_top_init_offset!())], curr_top
          ; mov [rbp + (next_tail_init_offset!())], next_tail
-         ; add input_pos, input_inc
          ; jmp =>self.fetch_next_char
          ; return_result:
          ;; CG::return_result(&mut self)
@@ -496,7 +531,8 @@ impl PikeJIT {
         ; push r13
         ; push r14
         ; push r15
-        // Initialize input_pos and input_end
+        // Initialize input_pos, input_end and mem_size
+        ; mov [rbp + mem_size_offset!()], r9
         ; mov input_pos, [rbp + span_start_offset!()]
         ; mov span_end, [rbp + span_end_offset!()]
         // Okay so push immediate does not support 64bits value with this
