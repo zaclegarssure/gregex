@@ -3,12 +3,12 @@ use std::collections::{HashSet, VecDeque};
 use crate::{
     pike_bytecode::Instruction::{self, *},
     regex::{self, Regex},
-    util::{Captures, Input, Match, Span},
+    util::{Captures, Char, Input, Match, Span},
 };
 
 pub struct PikeVM {
     bytecode: Vec<Instruction>,
-    capture_count: usize,
+    register_count: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -56,12 +56,11 @@ struct State {
 }
 
 impl State {
-    fn new(state_count: usize) -> Self {
+    fn new(state_count: usize, input_pos: usize) -> Self {
         Self {
             active: VecDeque::with_capacity(state_count),
             next: VecDeque::with_capacity(state_count),
-            // TODO Fix this later
-            input_pos: 0,
+            input_pos,
             visited: HashSet::with_capacity(state_count),
             best_match: None,
         }
@@ -80,6 +79,8 @@ impl State {
         self.active.pop_front()
     }
 
+    /// Pop the active queue until a thread whose pc was not visited already
+    /// during this iteration is found, and returns it.
     fn pop_active_until_not_visited(&mut self) -> Option<Thread> {
         while let Some(thread) = self.pop_active() {
             if self.visited.insert(thread.pc) {
@@ -98,38 +99,18 @@ impl State {
         self.input_pos += step;
         std::mem::swap(&mut self.active, &mut self.next);
     }
+}
 
-    fn step_at_end(&mut self, bytecode: &[Instruction]) {
-        let state = self;
-        while let Some(mut thread) = state.pop_active_until_not_visited() {
-            match &bytecode[thread.pc] {
-                Fork2(a, b) => {
-                    state.push_active(thread.clone().with_pc(*b));
-                    state.push_active(thread.with_pc(*a));
-                }
-                ForkN(branches) => {
-                    for pc in branches.iter().rev() {
-                        state.push_active(thread.clone().with_pc(*pc));
-                    }
-                }
-                Jmp(target) => {
-                    state.push_active(thread.with_pc(*target));
-                }
-                WriteReg(r) => {
-                    thread.write_reg(*r, state.input_pos);
-                    state.push_active(thread.inc_pc());
-                }
-                Accept => {
-                    state.accept(thread);
-                    break;
-                }
-                _ => (),
-            }
+impl PikeVM {
+    pub fn new(bytecode: Vec<Instruction>, register_count: usize) -> Self {
+        Self {
+            bytecode,
+            register_count,
         }
     }
 
-    fn step(&mut self, bytecode: &[Instruction], c: char) {
-        let state = self;
+    fn step(&self, state: &mut State, c: Char) {
+        let bytecode = self.bytecode.as_slice();
         while let Some(mut thread) = state.pop_active_until_not_visited() {
             match &bytecode[thread.pc] {
                 Consume(c2) if *c2 == c => {
@@ -175,15 +156,6 @@ impl State {
     }
 }
 
-impl PikeVM {
-    pub fn new(bytecode: Vec<Instruction>, capture_count: usize) -> Self {
-        Self {
-            bytecode,
-            capture_count,
-        }
-    }
-}
-
 impl Regex for PikeVM {
     fn find<'s>(&self, input: impl Into<Input<'s>>) -> Option<Match<'s>> {
         let Input {
@@ -193,11 +165,11 @@ impl Regex for PikeVM {
             first_match,
         } = input.into();
         let state_count = self.bytecode.len();
-        let mut state = State::new(state_count);
-        let register_count = (self.capture_count + 1) * 2;
+        let mut state = State::new(state_count, from);
+        let register_count = self.register_count;
         state.push_active(Thread::new(register_count, from));
         for c in subject[from..to].chars() {
-            state.step(&self.bytecode, c);
+            self.step(&mut state, c.into());
             if !state.next.is_empty() {
                 match state.best_match {
                     Some(best_match) if first_match => {
@@ -214,7 +186,13 @@ impl Regex for PikeVM {
                 return state.best_match.map(|t| t.into_match(subject));
             }
         }
-        state.step_at_end(&self.bytecode);
+        if to == subject.len() {
+            self.step(&mut state, Char::INPUT_BOUND);
+        } else {
+            // TODO: Find a nicer way to do this
+            let c = subject[to..subject.len()].chars().next().unwrap().into();
+            self.step(&mut state, c);
+        }
         state.best_match.map(|t| t.into_match(subject))
     }
 

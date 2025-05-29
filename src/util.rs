@@ -3,7 +3,7 @@ This modules contains all utils types and functions used accross the whole proje
 and in particular accross multiple engines.
 */
 
-use std::ops::Range;
+use std::{fmt, ops::Range, u32};
 
 /// Defines the input paramter to most matching methods on a [`crate::Regex`].
 /// Since all values other than subject have a default value it's always
@@ -161,4 +161,38 @@ impl<'s> Captures<'s> {
 
     // TODO: Add an iterator over groups
     // and one over all matched groups maybe?
+}
+
+/// Represent a single unicode code-point, or a special sentinel value used when
+/// we are at the start or the end of the input during the matching process.
+#[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct Char(u32);
+
+impl Char {
+    /// Used as a sentinel value to delimit the end and the begining
+    /// of an input string.
+    pub const INPUT_BOUND: Char = Char(u32::MAX);
+}
+
+impl fmt::Debug for Char {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if *self == Self::INPUT_BOUND {
+            write!(f, "INPUT_BOUND")
+        } else {
+            write!(f, "{}", char::from_u32(self.0).unwrap())
+        }
+    }
+}
+
+impl From<char> for Char {
+    fn from(value: char) -> Self {
+        Self(value as u32)
+    }
+}
+
+impl From<Char> for u32 {
+    fn from(value: Char) -> Self {
+        value.0
+    }
 }

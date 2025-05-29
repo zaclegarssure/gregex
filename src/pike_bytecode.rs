@@ -1,12 +1,13 @@
 use core::str;
 
+use crate::util::Char;
 use regex_syntax::hir::{Capture, Class, Hir, HirKind, Literal, Repetition};
 
 #[derive(Debug)]
 pub enum Instruction {
-    Consume(char),
+    Consume(Char),
     ConsumeAny,
-    ConsumeClass(Vec<(char, char)>),
+    ConsumeClass(Vec<(Char, Char)>),
     Fork2(usize, usize),
     ForkN(Vec<usize>),
     Jmp(usize),
@@ -63,14 +64,19 @@ impl Compiler {
             HirKind::Literal(Literal(bytes)) => {
                 // Ok because we check for Hir::is_utf8() before
                 let string = str::from_utf8(&bytes).unwrap();
+                // We could also directly decode the chars from the bytes
+                // without creating the &str.
                 for c in string.chars() {
-                    self.push(Consume(c));
+                    self.push(Consume(c.into()));
                 }
             }
             HirKind::Class(class) => {
                 match class {
                     Class::Unicode(class_unicode) => {
-                        let class = class_unicode.iter().map(|r| (r.start(), r.end())).collect();
+                        let class = class_unicode
+                            .iter()
+                            .map(|r| (r.start().into(), r.end().into()))
+                            .collect();
                         self.push(ConsumeClass(class));
                     }
                     // We define our regex over unicode only, for now

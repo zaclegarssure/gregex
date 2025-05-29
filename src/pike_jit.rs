@@ -12,7 +12,7 @@ use dynasmrt::{
 use crate::{
     pike_bytecode::Instruction,
     regex::{FindAllCaptures, Regex},
-    util::{Captures, Input, Match, Span},
+    util::{Captures, Char, Input, Match, Span},
 };
 
 macro_rules! __ {
@@ -607,10 +607,10 @@ impl PikeJIT {
         __!(self.ops, =>label)
     }
 
-    fn compile_consume<CG: CGImpl>(&mut self, i: usize, c: char) {
+    fn compile_consume<CG: CGImpl>(&mut self, i: usize, c: Char) {
         let next_label = self.instr_labels[i + 1];
         __!(self.ops,
-          cmp curr_char, ((c as u32).cast_signed())
+          cmp curr_char, ((u32::from(c)).cast_signed())
         ; jne >fail
         ;; self.push_next(next_label)
         ; jmp =>self.step_next_active
@@ -626,7 +626,7 @@ impl PikeJIT {
         __!(self.ops, jmp =>self.step_next_active)
     }
 
-    fn compile_consume_class<CG: CGImpl>(&mut self, i: usize, class: &[(char, char)]) {
+    fn compile_consume_class<CG: CGImpl>(&mut self, i: usize, class: &[(Char, Char)]) {
         let fail = self.ops.new_dynamic_label();
         let next = self.ops.new_dynamic_label();
         for (from, to) in class {
@@ -646,13 +646,13 @@ impl PikeJIT {
         &mut self,
         next_label: DynamicLabel,
         fail_label: DynamicLabel,
-        from: char,
-        to: char,
+        from: Char,
+        to: Char,
     ) {
         __!(self.ops,
-          cmp curr_char, (from as u32).cast_signed()
+          cmp curr_char, (u32::from(from)).cast_signed()
         ; jb =>fail_label
-        ; cmp curr_char, (to as u32).cast_signed()
+        ; cmp curr_char, (u32::from(to)).cast_signed()
         ; ja >next
         ; jmp =>next_label
         ; next:
