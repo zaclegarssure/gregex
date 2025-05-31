@@ -1,7 +1,7 @@
 //! Regex utils
 //!
-//! This modules contains all utils types and functions used accross the whole project,
-//! and in particular accross multiple engines.
+//! This module contains all utility types and functions used across the whole project,
+//! and in particular across multiple engines.
 
 use std::{
     cmp::{max, min},
@@ -9,23 +9,20 @@ use std::{
     ops::Range,
 };
 
-/// Defines the input paramter to most matching methods on a [`crate::Regex`].
-/// Since all values other than subject have a default value it's always
-/// sufficient to only provide the subject string to all matching methods,
-/// but for cases where we need more control (when finding all matches for instance)
-/// this types come handy.
+/// Defines the input parameter to most matching methods on a [`crate::Regex`].
+///
+/// # Fields
+/// - `subject`: The string to search in.
+/// - `span`: The range within `subject` to search (default: the whole string).
+/// - `anchored`: If true, only matches starting at the beginning of `span` are considered (default: false).
+/// - `first_match`: If true, returns the first match found, not necessarily the leftmost (default: false).
+///
+/// Usually, you can just pass a `&str` to matching methods, but `Input` allows more control for advanced use cases.
 #[derive(Clone)]
 pub struct Input<'s> {
-    /// The subject string against which the regex is matched
     pub subject: &'s str,
-    /// Perform the match within that span (but take the surroundings into accounts)
-    /// Default: 0..subject.len()
     pub span: Span,
-    /// Whenever the match should be anchored at the start of span.
-    /// Default: false
     pub anchored: bool,
-    /// Whenever the search should return the first match, or the left-most one.
-    /// Default: false
     pub first_match: bool,
 }
 
@@ -39,11 +36,24 @@ impl<'s> Input<'s> {
         }
     }
 
+    /// Sets whether to return the first match found.
     pub fn first_match(mut self, value: bool) -> Self {
         self.first_match = value;
         self
     }
 
+    /// Sets whenever to do an anchored match.
+    pub fn anchored(mut self, value: bool) -> Self {
+        self.anchored = value;
+        self
+    }
+
+    pub fn span(mut self, value: Span) -> Self {
+        self.span = value;
+        self
+    }
+
+    /// Returns true if the span is valid and the boundaries are valid UTF-8 boundaries in the subject.
     pub fn valid(&self) -> bool {
         self.span.valid()
             && self.subject.is_char_boundary(self.span.from)
@@ -57,9 +67,11 @@ impl<'s> From<&'s str> for Input<'s> {
     }
 }
 
-/// A span in a &str. Similar to [`std::range::Range`], but
-/// implements Copy. Plus, it implements repr(C) in order
+/// A span in a &str. Similar to [`std::ops::Range`], but
+/// implements `Copy`. Plus, it uses `repr(C)` in order
 /// to share it with the jitted code.
+///
+/// `from` is the start byte offset (inclusive), `to` is the end byte offset (exclusive).
 #[derive(Copy, Debug, Clone)]
 #[repr(C)]
 pub struct Span {
@@ -68,14 +80,18 @@ pub struct Span {
 }
 
 impl Span {
+    /// Returns true if the span is empty (from == to).
     pub fn empty(&self) -> bool {
         self.from == self.to
     }
 
+    /// Returns true if the span is valid (from <= to).
+    /// Invalid spans can be used to denote a no-match.
     pub fn valid(&self) -> bool {
         self.from <= self.to
     }
 
+    /// Returns a span that is always considered invalid.
     pub fn invalid() -> Span {
         Span { from: 1, to: 0 }
     }
@@ -96,8 +112,8 @@ impl From<Span> for Range<usize> {
     }
 }
 
-/// Successful non-capturing match. Contains only the bounds of the
-/// overall match.
+/// Represents a successful non-capturing match. Contains only the bounds of the
+/// overall match within the subject string. The span is guaranteed to be valid.
 #[derive(Copy, Debug, Clone)]
 pub struct Match<'s> {
     pub subject: &'s str,
@@ -110,12 +126,14 @@ impl<'s> Match<'s> {
         Self { subject, span }
     }
 
-    pub fn slice(&self) -> &'s str {
+    /// Returns the matched substring.
+    pub fn as_str(&self) -> &'s str {
         &self.subject[self.span.from..self.span.to]
     }
 
-    /// Returns the byte-index where the next non-overlapping
-    /// match could start. This take into account empty match.
+    /// Returns the byte-index where the next non-overlapping match could start.
+    /// This takes into account empty matches and advances at least one codepoint
+    /// to avoid infinite loops.
     pub fn next_match_start(&self) -> usize {
         if self.span.empty() && self.span.from < self.subject.len() {
             // Must advance to next codepoint otherwise we would always return
@@ -128,9 +146,9 @@ impl<'s> Match<'s> {
     }
 }
 
-/// Successful capturing match. Contains the bounds (if any) of all capture groups
-/// defined in the pattern. In particular this include the implicit capture-group
-/// 0.
+/// Represents a successful capturing match. Contains the bounds (if any) of all
+/// capture groups defined in the pattern, including the implicit group 0 (the
+/// overall match).
 #[derive(Debug, Clone)]
 pub struct Captures<'s> {
     subject: &'s str,
@@ -138,6 +156,8 @@ pub struct Captures<'s> {
 }
 
 impl<'s> Captures<'s> {
+    /// Returns the match for the given capture group index, or `None` if the
+    /// group did not participate in the match.
     pub fn get(&self, group_index: usize) -> Option<Match<'s>> {
         let span = *self.spans.get(group_index)?;
         if !span.valid() {
@@ -150,6 +170,7 @@ impl<'s> Captures<'s> {
         })
     }
 
+    /// Returns the overall match (group 0).
     pub fn group0(&self) -> Match<'s> {
         // Must always be set
         self.get(0).unwrap()
@@ -159,6 +180,7 @@ impl<'s> Captures<'s> {
         Self { subject, spans }
     }
 
+    /// Returns the number of capture groups (including group 0).
     pub fn group_len(&self) -> usize {
         self.spans.len()
     }
@@ -167,23 +189,22 @@ impl<'s> Captures<'s> {
     // and one over all matched groups maybe?
 }
 
-/// Represent a single unicode code-point, or a special sentinel value used when
-/// we are at the start or the end of the input during the matching process.
+/// Represents a single Unicode code-point, or a special sentinel value used when
+/// at the start or end of the input during the matching process.
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct Char(u32);
 
 impl Char {
-    /// Used as a sentinel value to delimit the end and the begining
-    /// of an input string.
+    /// Sentinel value used to delimit the end and the beginning of an input string.
     pub const INPUT_BOUND: Char = Char(u32::MAX);
 
-    /// Return a range of Char matching all possible Char
+    /// Returns a range of `Char` matching all possible code points, including invalid ones.
     pub fn all() -> (Char, Char) {
         (Char(0), Self::INPUT_BOUND)
     }
 
-    /// Return a range of Char matching all possible unicode codepoints.
+    /// Returns a range of `Char` matching all valid Unicode code points.
     pub fn all_valid() -> (Char, Char) {
         (char::MIN.into(), char::MAX.into())
     }
@@ -211,7 +232,7 @@ impl From<Char> for u32 {
     }
 }
 
-/// A character interval where both bounds are inclusive. If the lowe bound is
+/// A character interval where both bounds are inclusive. If the lower bound is
 /// greater than the upper bound, then the interval is considered empty.
 #[derive(Debug, Clone, Copy)]
 pub struct Interval(Char, Char);

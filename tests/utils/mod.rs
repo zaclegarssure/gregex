@@ -71,7 +71,7 @@ pub fn check_all_engines(pattern: &str, input: &str) {
                 let my_caps = engine.find_captures(input);
                 let my_groups = my_caps.as_ref().map(|caps| {
                     (0..caps.group_len())
-                        .map(|i| caps.get(i).map(|g| g.slice()))
+                        .map(|i| caps.get(i).map(|g| g.as_str()))
                         .collect::<Vec<_>>()
                 });
                 assert_eq!(
@@ -95,7 +95,7 @@ pub fn check_all_engines(pattern: &str, input: &str) {
                     .find_all_captures(input)
                     .map(|caps| {
                         (0..caps.group_len())
-                            .map(|i| caps.get(i).map(|g| g.slice()))
+                            .map(|i| caps.get(i).map(|g| g.as_str()))
                             .collect()
                     })
                     .collect();

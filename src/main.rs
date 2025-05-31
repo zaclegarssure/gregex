@@ -40,7 +40,7 @@ fn main() {
             }
             match jitted.find_captures(input) {
                 Some(m) => {
-                    println!("Matched: {}", m.group0().slice());
+                    println!("Matched: {}", m.group0().as_str());
                 }
                 None => println!("No match."),
             }
