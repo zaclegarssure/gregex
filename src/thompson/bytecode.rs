@@ -1,0 +1,196 @@
+//! A Thompson NFA represented in a bytecode format.
+//!
+//! This module contains the definition of [`Instruction`], a
+//! bytecode format that represents a Thompson's NFA, which is
+//! one possible NFA representation of a regular expression whose
+//! particularities is to be linearly proportional in size to the
+//! pattern. Furthermore compiling a pattern to this representation
+//! take linear time. The compiler is also provided by this module,
+//! see [`Compiler`].
+use std::{error::Error, fmt};
+
+use crate::util::Char;
+
+/// Bytecode
+#[derive(Debug, Clone)]
+pub enum Instruction {
+    Consume(Char),
+    ConsumeAny,
+    ConsumeClass(Vec<(Char, Char)>),
+    Fork2(usize, usize),
+    ForkN(Vec<usize>),
+    Jmp(usize),
+    WriteReg(u32),
+    Accept,
+}
+
+use Instruction::*;
+use regex_syntax::hir::{Capture, Class, Hir, HirKind, Literal, Repetition};
+
+/// Compilation error
+/// TODO: Explain why each of these senario can occure
+#[derive(Debug)]
+pub enum CompileError {
+    InvalidUtf8,
+    ContainsLookAround,
+    ContainsNamedCaptureGroup,
+}
+
+impl fmt::Display for CompileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CompileError::InvalidUtf8 => write!(f, "Pattern contains non-unicode sequence"),
+            CompileError::ContainsLookAround => write!(f, "Pattern contains look-around"),
+            CompileError::ContainsNamedCaptureGroup => {
+                write!(f, "Pattern contains named capture groups")
+            }
+        }
+    }
+}
+
+impl Error for CompileError {}
+
+type Bytecode = Vec<Instruction>;
+
+/// A compiler from [`regex_syntax::hir::Hir`] to
+/// this bytecode representation.
+pub struct Compiler {
+    bytecode: Bytecode,
+}
+
+impl Compiler {
+    /// Try to compile a regex in [`regex_syntax::hir::Hir`] form to
+    /// this bytecode.
+    pub fn compile(hir: Hir) -> Result<Bytecode, CompileError> {
+        if !hir.properties().is_utf8() {
+            return Err(CompileError::InvalidUtf8);
+        }
+        if !hir.properties().look_set().is_empty() {
+            return Err(CompileError::ContainsLookAround);
+        }
+        let mut compiler = Compiler {
+            bytecode: Vec::new(),
+        };
+        compiler.compile_internal(hir);
+        compiler.push(Accept);
+        Ok(compiler.bytecode)
+    }
+
+    fn current_pc(&self) -> usize {
+        self.bytecode.len()
+    }
+
+    fn push(&mut self, instruction: Instruction) {
+        self.bytecode.push(instruction);
+    }
+
+    fn fork2(a: usize, b: usize, greedy: bool) -> Instruction {
+        if greedy { Fork2(a, b) } else { Fork2(b, a) }
+    }
+
+    fn compile_internal(&mut self, hir: Hir) {
+        match hir.into_kind() {
+            HirKind::Empty => (),
+            HirKind::Literal(Literal(bytes)) => {
+                // Ok because we check for Hir::is_utf8() before
+                let string = str::from_utf8(&bytes).unwrap();
+                // We could also directly decode the chars from the bytes
+                // without creating the &str.
+                for c in string.chars() {
+                    self.push(Consume(c.into()));
+                }
+            }
+            HirKind::Class(class) => {
+                match class {
+                    Class::Unicode(class_unicode) => {
+                        let class = class_unicode
+                            .iter()
+                            .map(|r| (r.start().into(), r.end().into()))
+                            .collect();
+                        self.push(ConsumeClass(class));
+                    }
+                    // We define our regex over unicode only, for now
+                    Class::Bytes(_) => unreachable!(),
+                }
+            }
+            HirKind::Look(_) => unreachable!(),
+            HirKind::Repetition(Repetition {
+                min,
+                max,
+                greedy,
+                sub,
+            }) => {
+                let mut last_iter_start = None;
+                for i in 0..min {
+                    if i == min - 1 {
+                        last_iter_start = Some(self.current_pc());
+                    }
+                    self.compile_internal(*sub.clone());
+                }
+                match max {
+                    Some(max) => {
+                        let diff = (max - min) as usize;
+                        let mut forks_pc = Vec::with_capacity(diff);
+                        for _ in min..max {
+                            forks_pc.push(self.current_pc());
+                            self.push(Fork2(0, 0));
+                            self.compile_internal(*sub.clone());
+                        }
+                        let end_pc = self.current_pc();
+                        for fork_pc in forks_pc {
+                            self.bytecode[fork_pc] = Self::fork2(fork_pc + 1, end_pc, greedy);
+                        }
+                    }
+                    None => match last_iter_start {
+                        Some(last_iter_start) => {
+                            self.push(Self::fork2(last_iter_start, self.current_pc() + 1, greedy));
+                        }
+                        None => {
+                            let fork_pc = self.current_pc();
+                            self.push(Fork2(0, 0));
+                            self.compile_internal(*sub);
+                            self.push(Jmp(fork_pc));
+                            self.bytecode[fork_pc] =
+                                Self::fork2(fork_pc + 1, self.current_pc(), greedy);
+                        }
+                    },
+                }
+            }
+            HirKind::Capture(Capture { index, name, sub }) => {
+                // TODO: Check this before
+                assert!(name.is_none());
+                self.push(WriteReg(index * 2));
+                self.compile_internal(*sub);
+                self.push(WriteReg(index * 2 + 1));
+            }
+            HirKind::Concat(hirs) => {
+                for hir in hirs {
+                    self.compile_internal(hir);
+                }
+            }
+            // Quick annoying fun fact for anyone who would read this:
+            // In regex-syntax (rust regex) Alternation means a regex of the form e1|e2|e3,
+            // and concatenation is e1e2e3. In V8 (and I guess JS in general) alternation
+            // means e1e2e3 and disjuction means e1|e2|e3.
+            HirKind::Alternation(hirs) => {
+                let length = hirs.len();
+                let mut fork_targets = Vec::with_capacity(length);
+                let mut jmps = Vec::with_capacity(length - 1);
+                let current_pc = self.current_pc();
+                self.push(ForkN(Vec::new()));
+                for (i, hir) in hirs.into_iter().enumerate() {
+                    fork_targets.push(self.current_pc());
+                    self.compile_internal(hir);
+                    if i < length - 1 {
+                        jmps.push(self.current_pc());
+                        self.push(Jmp(0));
+                    }
+                }
+                self.bytecode[current_pc] = ForkN(fork_targets);
+                for pc in jmps {
+                    self.bytecode[pc] = Jmp(self.current_pc())
+                }
+            }
+        }
+    }
+}

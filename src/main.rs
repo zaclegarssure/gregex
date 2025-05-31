@@ -1,12 +1,5 @@
 use std::io::{self, Write};
 
-use gregex::Regex;
-use gregex::pike_bytecode::Compiler;
-use gregex::pike_jit::PikeJIT;
-use gregex::pike_jit::cg_impl_array::CGImplArray;
-use gregex::pike_jit::cg_impl_register::CGImplReg;
-use regex_syntax::Parser;
-
 fn main() {
     println!("Gregex REPL");
     println!("Type an empty pattern to exit.");
@@ -24,39 +17,11 @@ fn main() {
             break;
         }
 
-        let hir = match Parser::new().parse(pattern) {
-            Ok(hir) => hir,
+        let jitted = match gregex::Regex::pike_vm(pattern) {
+            Ok(regex) => regex,
             Err(e) => {
-                println!("Regex parse error: {e}");
+                print!("Error: {}", e);
                 continue;
-            }
-        };
-
-        let capture_count = hir.properties().explicit_captures_len();
-        let register_count = 2 * (capture_count + 1);
-        let bytecode = match Compiler::compile(hir) {
-            Ok(bc) => bc,
-            Err(e) => {
-                println!("Compile error: {e:?}");
-                continue;
-            }
-        };
-
-        let jitted = if capture_count > 0 {
-            match PikeJIT::compile::<CGImplArray>(&bytecode, register_count) {
-                Ok(jitted) => jitted,
-                Err(e) => {
-                    println!("Jit error: {e:?}");
-                    continue;
-                }
-            }
-        } else {
-            match PikeJIT::compile::<CGImplReg>(&bytecode, register_count) {
-                Ok(jitted) => jitted,
-                Err(e) => {
-                    println!("Jit error: {e:?}");
-                    continue;
-                }
             }
         };
 
@@ -75,9 +40,8 @@ fn main() {
             }
             match jitted.find_captures(input) {
                 Some(m) => {
-                    println!("Matched: {}", m.group0().slice(),);
+                    println!("Matched: {}", m.group0().slice());
                 }
-
                 None => println!("No match."),
             }
         }

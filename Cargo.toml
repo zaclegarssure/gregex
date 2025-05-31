@@ -7,3 +7,6 @@ edition = "2024"
 regex-syntax = "0.8.5"
 dynasm = "3.2.0"
 dynasmrt = "3.2.0"
+
+[dev-dependencies]
+regex = "1.11.1"
