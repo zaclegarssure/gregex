@@ -135,19 +135,21 @@ impl CGImpl for CGImplArray {
         ; je >empty_case
         ; mov curr_thd_data, [cg_reg]
         ; sub cg_reg, ptr_size!()
-        ; jmp >set_all_to_minus_1
+        ; jmp >set_all_to_invalid
         ; empty_case:
         ; mov reg1, [cg_reg]
         ; mov curr_thd_data, reg1
         ; add reg1, (Self::array_size(jit) as u32).cast_signed()
         ; mov [cg_reg], reg1
-        ; set_all_to_minus_1:
-        ; xor reg1, reg1
-        ; dec reg1
+        ; set_all_to_invalid:
         ;; {
         for i in 0..jit.capture_count {
             let offset = i * ptr_size!();
-            __!(jit.ops, mov [mem + curr_thd_data + offset as i32], reg1);
+            if i % 2 == 0 {
+                __!(jit.ops, mov QWORD [mem + curr_thd_data + offset as i32], 1);
+            } else {
+                __!(jit.ops, mov QWORD [mem + curr_thd_data + offset as i32], 0);
+            }
         }
         }
         ; ret

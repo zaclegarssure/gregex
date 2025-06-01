@@ -9,6 +9,8 @@ use crate::thompson::pike_jit::JittedRegex;
 use crate::thompson::pike_vm::PikeVM;
 use crate::util::{Captures, Input, Match, Span};
 
+type CompileError = Box<dyn Error + Send + Sync + 'static>;
+
 /// A regular expression
 pub struct Regex {
     engine: RegexEngine,
@@ -111,19 +113,77 @@ impl Regex {
         }
     }
 
-    pub fn pike_vm(pattern: &str) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
-        let pike_vm = PikeVM::new(pattern)?;
+    pub fn pike_vm(pattern: &str) -> Result<Self, CompileError> {
+        Builder::new(pattern).pike_vm()
+    }
+
+    pub fn pike_jit(pattern: &str) -> Result<Self, CompileError> {
+        Builder::new(pattern).pike_jit()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub unicode: bool,
+    pub case_insensitive: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            unicode: true,
+            case_insensitive: false,
+        }
+    }
+}
+
+impl From<Config> for regex_syntax::Parser {
+    fn from(value: Config) -> Self {
+        regex_syntax::ParserBuilder::new()
+            .unicode(value.unicode)
+            .case_insensitive(value.case_insensitive)
+            .build()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Builder<'s> {
+    pattern: &'s str,
+    config: Config,
+}
+
+impl<'s> Builder<'s> {
+    pub fn new(pattern: &'s str) -> Self {
+        Self {
+            pattern,
+            config: Config::default(),
+        }
+    }
+
+    pub fn unicode(mut self, value: bool) -> Self {
+        self.config.unicode = value;
+        self
+    }
+
+    pub fn case_insensitive(mut self, value: bool) -> Self {
+        self.config.case_insensitive = value;
+        self
+    }
+
+    pub fn pike_vm(self) -> Result<Regex, CompileError> {
+        let pike_vm = PikeVM::new(self.pattern, self.config)?;
         let capture_count = pike_vm.capture_count();
-        Ok(Self {
+
+        Ok(Regex {
             engine: RegexEngine::PikeVM(pike_vm),
             capture_count,
         })
     }
 
-    pub fn pike_jit(pattern: &str) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
-        let pike_jit = JittedRegex::new(pattern)?;
+    pub fn pike_jit(self) -> Result<Regex, CompileError> {
+        let pike_jit = JittedRegex::new(self.pattern, self.config)?;
         let capture_count = pike_jit.capture_count();
-        Ok(Self {
+        Ok(Regex {
             engine: RegexEngine::JittedRegex(pike_jit),
             capture_count,
         })

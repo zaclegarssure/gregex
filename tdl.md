@@ -1,4 +1,4 @@
-- Setup the crate such that all engines can be easily called
+- Case insensitive
 - Rethink the RegexImpl API to see if we really need anything more than just search_spans
 - Benchmark the intepreter
 - Write design doc and record results

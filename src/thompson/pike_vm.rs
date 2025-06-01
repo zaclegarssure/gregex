@@ -9,7 +9,7 @@ use std::{
 use regex_syntax::Parser;
 
 use crate::{
-    regex::RegexImpl,
+    regex::{Config, RegexImpl},
     thompson::bytecode::{
         Compiler,
         Instruction::{self, *},
@@ -127,8 +127,11 @@ impl PikeVM {
         }
     }
 
-    pub fn new(pattern: &str) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
-        let hir = Parser::new().parse(pattern)?;
+    pub fn new(
+        pattern: &str,
+        config: Config,
+    ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
+        let hir = Parser::from(config).parse(pattern)?;
         let capture_count = hir.properties().explicit_captures_len() + 1;
         let bytecode = Compiler::compile(hir)?;
 

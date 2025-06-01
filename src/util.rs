@@ -135,11 +135,24 @@ impl<'s> Match<'s> {
     /// This takes into account empty matches and advances at least one codepoint
     /// to avoid infinite loops.
     pub fn next_match_start(&self) -> usize {
-        if self.span.empty() && self.span.from < self.subject.len() {
-            // Must advance to next codepoint otherwise we would always return
-            // the same empty match forever.
-            let range: Range<usize> = self.span.into();
-            self.subject[range].len()
+        if self.span.empty() {
+            if self.span.from == self.subject.len() {
+                self.span.from + 1
+            } else {
+                // Must advance to next codepoint otherwise we would always return
+                // the same empty match forever.
+                // TODO: Find a less manual way to do this
+                let b = self.subject.as_bytes()[self.span.from];
+                if b < 0x80 {
+                    self.span.from + 1
+                } else if b < 0xE0 {
+                    self.span.from + 2
+                } else if b < 0xF0 {
+                    self.span.from + 3
+                } else {
+                    self.span.from + 4
+                }
+            }
         } else {
             self.span.to
         }

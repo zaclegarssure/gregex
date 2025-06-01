@@ -10,9 +10,9 @@ use dynasmrt::{
     AssemblyOffset, DynamicLabel, DynasmApi, DynasmLabelApi, ExecutableBuffer, dynasm,
     x64::Assembler,
 };
-use regex_syntax::Parser;
+use regex_syntax::{Parser, ParserBuilder};
 
-use crate::regex::RegexImpl;
+use crate::regex::{Config, RegexImpl};
 use crate::thompson::bytecode::Instruction;
 use crate::util::{Char, Input, Match, Span};
 
@@ -217,8 +217,11 @@ impl RegexImpl for JittedRegex {
 }
 
 impl JittedRegex {
-    pub fn new(pattern: &str) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
-        let hir = Parser::new().parse(pattern)?;
+    pub fn new(
+        pattern: &str,
+        config: Config,
+    ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
+        let hir = Parser::from(config).parse(pattern)?;
         let capture_count = hir.properties().explicit_captures_len() + 1;
         let bytecode = Compiler::compile(hir)?;
         let s = if capture_count == 1 {
