@@ -10,7 +10,7 @@ use dynasmrt::{
     AssemblyOffset, DynamicLabel, DynasmApi, DynasmLabelApi, ExecutableBuffer, dynasm,
     x64::Assembler,
 };
-use regex_syntax::{Parser, ParserBuilder};
+use regex_syntax::Parser;
 
 use crate::regex::{Config, RegexImpl};
 use crate::thompson::bytecode::Instruction;

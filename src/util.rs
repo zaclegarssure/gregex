@@ -131,6 +131,16 @@ impl<'s> Match<'s> {
         &self.subject[self.span.from..self.span.to]
     }
 
+    /// Start in byte of this match
+    pub fn start(&self) -> usize {
+        self.span.from
+    }
+
+    /// End in byte of this match
+    pub fn end(&self) -> usize {
+        self.span.to
+    }
+
     /// Returns the byte-index where the next non-overlapping match could start.
     /// This takes into account empty matches and advances at least one codepoint
     /// to avoid infinite loops.
