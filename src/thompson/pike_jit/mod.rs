@@ -16,7 +16,7 @@ use crate::regex::{Config, RegexImpl};
 use crate::thompson::bytecode::Instruction;
 use crate::util::{Char, Input, Match, Span};
 
-use super::bytecode::Compiler;
+use super::bytecode::{Bytecode, Compiler};
 
 /// Defines the platform and register aliases
 macro_rules! __ {
@@ -221,9 +221,13 @@ impl JittedRegex {
         pattern: &str,
         config: Config,
     ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
-        let hir = Parser::from(config).parse(pattern)?;
-        let capture_count = hir.properties().explicit_captures_len() + 1;
-        let bytecode = Compiler::compile(hir)?;
+        let hir = Parser::from(config.clone()).parse(pattern)?;
+        let capture_count = if config.cg {
+            hir.properties().explicit_captures_len() + 1
+        } else {
+            1
+        };
+        let bytecode = Compiler::compile(hir, config)?;
         let s = if capture_count == 1 {
             PikeJIT::compile::<CGImplReg>(&bytecode, capture_count)?
         } else {
@@ -289,6 +293,7 @@ impl JittedRegex {
 pub struct PikeJIT {
     ops: Assembler,
     instr_labels: Vec<DynamicLabel>,
+    outlined_class_labels: Vec<DynamicLabel>,
     capture_count: usize,
     step_next_active: DynamicLabel,
     next_iter: DynamicLabel,
@@ -322,11 +327,22 @@ impl PikeJIT {
     const THREAD_SIZE: i32 = 16;
 
     pub fn compile<CG: CGImpl>(
-        bytecode: &[Instruction],
+        bytecode: &Bytecode,
         register_count: usize,
     ) -> Result<JittedRegex, CompileError> {
         let mut ops = Assembler::new().map_err(|_| CompileError::FailedToCreateAssembler)?;
-        let instr_labels = Vec::from_iter(bytecode.iter().map(|_| ops.new_dynamic_label()));
+        let instr_labels = Vec::from_iter(
+            bytecode
+                .instructions
+                .iter()
+                .map(|_| ops.new_dynamic_label()),
+        );
+        let outlined_class_labels = Vec::from_iter(
+            bytecode
+                .outlined_classes
+                .iter()
+                .map(|_| ops.new_dynamic_label()),
+        );
         let step_next_active = ops.new_dynamic_label();
         let next_iter = ops.new_dynamic_label();
         let next_iter_with_search = ops.new_dynamic_label();
@@ -339,8 +355,12 @@ impl PikeJIT {
             next_iter,
             next_iter_with_search,
             fetch_next_char,
+            outlined_class_labels,
         };
-        for (i, instr) in bytecode.iter().enumerate() {
+        for (i, class) in bytecode.outlined_classes.iter().enumerate() {
+            compiler.compile_outlined_class(i, class);
+        }
+        for (i, instr) in bytecode.instructions.iter().enumerate() {
             compiler.compile_instruction::<CG>(i, instr);
         }
         compiler.assemble::<CG>()
@@ -575,20 +595,54 @@ impl PikeJIT {
         )
     }
 
-    fn compile_instruction<CG: CGImpl>(&mut self, i: usize, instr: &Instruction) {
+    fn compile_instruction<CG: CGImpl>(&mut self, i: usize, instruction: &Instruction) {
         self.bind_label(i);
         self.check_has_visited::<CG>(i);
-        match instr {
+        match instruction {
             Instruction::Consume(c) => self.compile_consume::<CG>(i, *c),
             Instruction::ConsumeAny => self.compile_consume_any(i),
-            Instruction::ConsumeClass(class) => {
-                self.compile_consume_class::<CG>(i, class.as_slice())
-            }
+            Instruction::ConsumeClass(class) => self.compile_consume_class::<CG>(i, class),
             Instruction::Fork2(a, b) => self.compile_fork::<CG>(&[*a, *b]),
-            Instruction::ForkN(items) => self.compile_fork::<CG>(items.as_slice()),
+            Instruction::ForkN(items) => self.compile_fork::<CG>(items),
             Instruction::Jmp(target) => self.compile_jump(*target),
             Instruction::WriteReg(reg) => self.compile_write_reg::<CG>(i, *reg),
             Instruction::Accept => self.compile_accept::<CG>(),
+            Instruction::ConsumeOutlined(class_id) => {
+                self.compile_consume_outlined::<CG>(i, *class_id)
+            }
+        }
+    }
+
+    fn compile_consume_outlined<CG: CGImpl>(&mut self, i: usize, class_id: usize) {
+        let class_label = self.outlined_class_labels[class_id];
+        __!(self.ops,
+          call =>class_label
+        ; test reg1, reg1
+        ; jnz >fail
+        ;; self.push_next(self.instr_labels[i+1])
+        ; jmp =>self.step_next_active
+        ; fail:
+        ;; CG::free_curr_thread(self)
+        ; jmp =>self.step_next_active
+        )
+    }
+
+    fn compile_outlined_class(&mut self, i: usize, class: &[(Char, Char)]) {
+        let label = self.outlined_class_labels[i];
+        __!(self.ops, =>label);
+        for (from, to) in class {
+            __!(self.ops,
+                cmp curr_char, (u32::from(*from)).cast_signed()
+            ; jb >fail
+            ; cmp curr_char, (u32::from(*to)).cast_signed()
+            ; ja >next
+            ; mov reg1, 0
+            ; ret
+            ; fail:
+            ; mov reg1, 1
+            ; ret
+            ; next:
+            )
         }
     }
 

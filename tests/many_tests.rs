@@ -11,6 +11,14 @@ const CASES: &[(&str, &str)] = &[
     (r"invalid[", "anything"),
     (r"\d+=\d+", "124221=12323=2=abd"),
     (
+        r"Sherlock Holmes|Shrelock Holm|John Watson|Irene Adler|Inspector Lestrade|Professor Moriarty",
+        "Professor Moriarty
+        Sherlock Holmes
+        John Watson
+        Irene Adler
+        ",
+    ),
+    (
         r".*d",
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad",
     ), //(r"^$", ""),

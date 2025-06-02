@@ -1,10 +1,13 @@
+- Word boundaries
 - Rethink the RegexImpl API to see if we really need anything more than just search_spans
-- Benchmark the intepreter
 - Write design doc and record results
-- Change the interpreter to better match the jitted code
 - Add barrier bit on bytecode
 - Improve the perfromances of match-all-captures
 - Glushkov
-- raw-utf8
 - raw-byte
 - Named capture groups, probably put some group info on the regex
+- Multipatterns
+- Optimize trailing winning threads
+- Better memcpy in jit
+- Fat threads with cg0 inlined ?
+- More flags

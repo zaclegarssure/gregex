@@ -249,6 +249,12 @@ impl From<char> for Char {
     }
 }
 
+impl From<u8> for Char {
+    fn from(value: u8) -> Self {
+        (value as char).into()
+    }
+}
+
 impl From<Char> for u32 {
     fn from(value: Char) -> Self {
         value.0

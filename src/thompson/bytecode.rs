@@ -7,18 +7,23 @@
 //! pattern. Furthermore compiling a pattern to this representation
 //! take linear time. The compiler is also provided by this module,
 //! see [`Compiler`].
-use std::{error::Error, fmt};
+use std::{collections::HashMap, error::Error, fmt};
 
-use crate::util::Char;
+use crate::{regex::Config, util::Char};
 
 /// Bytecode
 #[derive(Debug, Clone)]
 pub enum Instruction {
     Consume(Char),
     ConsumeAny,
-    ConsumeClass(Vec<(Char, Char)>),
+    ConsumeClass(Box<[(Char, Char)]>),
+    /// Consume a class which was outlined during the compilation process
+    /// This is done with large classes to reduce memory usage for the interpreter
+    /// and make the jitted smaller (and therefore more cache-friendly), since
+    /// there classes are inlined.
+    ConsumeOutlined(usize),
     Fork2(usize, usize),
-    ForkN(Vec<usize>),
+    ForkN(Box<[usize]>),
     Jmp(usize),
     WriteReg(u32),
     Accept,
@@ -50,18 +55,25 @@ impl fmt::Display for CompileError {
 
 impl Error for CompileError {}
 
-type Bytecode = Vec<Instruction>;
+#[derive(Debug, Default)]
+pub struct Bytecode {
+    pub instructions: Vec<Instruction>,
+    pub outlined_classes: Vec<Box<[(Char, Char)]>>,
+}
 
 /// A compiler from [`regex_syntax::hir::Hir`] to
 /// this bytecode representation.
+#[derive(Debug, Default)]
 pub struct Compiler {
     bytecode: Bytecode,
+    outlined_classes: HashMap<Box<[(Char, Char)]>, usize>,
+    config: Config,
 }
 
 impl Compiler {
     /// Try to compile a regex in [`regex_syntax::hir::Hir`] form to
     /// this bytecode.
-    pub fn compile(hir: Hir) -> Result<Bytecode, CompileError> {
+    pub fn compile(hir: Hir, config: Config) -> Result<Bytecode, CompileError> {
         if !hir.properties().is_utf8() {
             return Err(CompileError::InvalidUtf8);
         }
@@ -69,7 +81,8 @@ impl Compiler {
             return Err(CompileError::ContainsLookAround);
         }
         let mut compiler = Compiler {
-            bytecode: Vec::new(),
+            config,
+            ..Default::default()
         };
         compiler.compile_internal(hir);
         compiler.push(Accept);
@@ -77,11 +90,11 @@ impl Compiler {
     }
 
     fn current_pc(&self) -> usize {
-        self.bytecode.len()
+        self.bytecode.instructions.len()
     }
 
     fn push(&mut self, instruction: Instruction) {
-        self.bytecode.push(instruction);
+        self.bytecode.instructions.push(instruction);
     }
 
     fn fork2(a: usize, b: usize, greedy: bool) -> Instruction {
@@ -101,16 +114,32 @@ impl Compiler {
                 }
             }
             HirKind::Class(class) => {
-                match class {
-                    Class::Unicode(class_unicode) => {
-                        let class = class_unicode
-                            .iter()
-                            .map(|r| (r.start().into(), r.end().into()))
-                            .collect();
-                        self.push(ConsumeClass(class));
+                let class = match class {
+                    Class::Unicode(class_unicode) => class_unicode
+                        .iter()
+                        .map(|c| (c.start().into(), c.end().into()))
+                        .collect::<Box<[_]>>(),
+                    Class::Bytes(class_byte) => class_byte
+                        .iter()
+                        .map(|c| (c.start().into(), c.end().into()))
+                        .collect::<Box<[_]>>(),
+                };
+                // TODO: Parametrized this
+                if class.len() > 4 {
+                    match self.outlined_classes.get(&class) {
+                        Some(id) => {
+                            self.push(ConsumeOutlined(*id));
+                        }
+                        None => {
+                            let id = self.bytecode.outlined_classes.len();
+                            // TODO: Find a way to avoid this cloning
+                            self.outlined_classes.insert(class.clone(), id);
+                            self.bytecode.outlined_classes.push(class);
+                            self.push(ConsumeOutlined(id));
+                        }
                     }
-                    // We define our regex over unicode only, for now
-                    Class::Bytes(_) => unreachable!(),
+                } else {
+                    self.push(ConsumeClass(class));
                 }
             }
             HirKind::Look(_) => unreachable!(),
@@ -138,7 +167,8 @@ impl Compiler {
                         }
                         let end_pc = self.current_pc();
                         for fork_pc in forks_pc {
-                            self.bytecode[fork_pc] = Self::fork2(fork_pc + 1, end_pc, greedy);
+                            self.bytecode.instructions[fork_pc] =
+                                Self::fork2(fork_pc + 1, end_pc, greedy);
                         }
                     }
                     None => match last_iter_start {
@@ -150,18 +180,22 @@ impl Compiler {
                             self.push(Fork2(0, 0));
                             self.compile_internal(*sub);
                             self.push(Jmp(fork_pc));
-                            self.bytecode[fork_pc] =
+                            self.bytecode.instructions[fork_pc] =
                                 Self::fork2(fork_pc + 1, self.current_pc(), greedy);
                         }
                     },
                 }
             }
             HirKind::Capture(Capture { index, name, sub }) => {
-                // TODO: Check this before
-                assert!(name.is_none());
-                self.push(WriteReg(index * 2));
-                self.compile_internal(*sub);
-                self.push(WriteReg(index * 2 + 1));
+                if self.config.cg {
+                    // TODO: Check this before
+                    assert!(name.is_none());
+                    self.push(WriteReg(index * 2));
+                    self.compile_internal(*sub);
+                    self.push(WriteReg(index * 2 + 1));
+                } else {
+                    self.compile_internal(*sub);
+                }
             }
             HirKind::Concat(hirs) => {
                 for hir in hirs {
@@ -177,18 +211,21 @@ impl Compiler {
                 let mut fork_targets = Vec::with_capacity(length);
                 let mut jmps = Vec::with_capacity(length - 1);
                 let current_pc = self.current_pc();
-                self.push(ForkN(Vec::new()));
+                // Just to allocate some space
+                self.push(ConsumeAny);
                 for (i, hir) in hirs.into_iter().enumerate() {
                     fork_targets.push(self.current_pc());
                     self.compile_internal(hir);
                     if i < length - 1 {
                         jmps.push(self.current_pc());
+                        // Patched just below
                         self.push(Jmp(0));
                     }
                 }
-                self.bytecode[current_pc] = ForkN(fork_targets);
+                self.bytecode.instructions[current_pc] = ForkN(fork_targets.into_boxed_slice());
+                // Path jumps to point to the end of the alternation
                 for pc in jmps {
-                    self.bytecode[pc] = Jmp(self.current_pc())
+                    self.bytecode.instructions[pc] = Jmp(self.current_pc())
                 }
             }
         }

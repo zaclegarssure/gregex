@@ -126,6 +126,7 @@ impl Regex {
 pub struct Config {
     pub unicode: bool,
     pub case_insensitive: bool,
+    pub cg: bool,
 }
 
 impl Default for Config {
@@ -133,6 +134,7 @@ impl Default for Config {
         Self {
             unicode: true,
             case_insensitive: false,
+            cg: true,
         }
     }
 }
@@ -167,6 +169,11 @@ impl<'s> Builder<'s> {
 
     pub fn case_insensitive(mut self, value: bool) -> Self {
         self.config.case_insensitive = value;
+        self
+    }
+
+    pub fn cg(mut self, value: bool) -> Self {
+        self.config.cg = value;
         self
     }
 

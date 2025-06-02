@@ -4,3 +4,6 @@ Implementation notes.
 - Barrier tricks
 - Static dispatch via enum
 - No need to reset the state in a match-all
+
+## Optimization ideas
+- Outline big unicode classes, otherwise the code becomes big and cache inneficient.
