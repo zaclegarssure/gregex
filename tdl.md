@@ -6,10 +6,10 @@
 - Named capture groups, probably put some group info on the regex
 - Multipatterns
 - Optimize trailing winning threads
-- Better memcpy in jit
 - Fat threads with cg0 inlined ?
 - More flags
 - Custom parser (pls)
 - Figure out why big unicod classes seem to be slower in this engine
 - Make bytecode internal private
 - Fix 32 bits value thingy in jit
+- Explore binary search for (large) char classes

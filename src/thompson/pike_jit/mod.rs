@@ -228,6 +228,9 @@ impl JittedRegex {
             return false;
         }
 
+        // This assumption is used in the jitted code
+        assert!(result.len() <= self.capture_count());
+
         state.ensure_capacity(self.initial_mem_size);
 
         let Input {

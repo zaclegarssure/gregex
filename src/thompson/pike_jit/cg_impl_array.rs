@@ -62,28 +62,15 @@ impl CGImpl for CGImplArray {
 
     fn return_result(jit: &mut PikeJIT) {
         __!(jit.ops,
-          mov curr_thd_data, [rbp + current_match_offset!()]
-        ; test curr_thd_data, curr_thd_data
+          mov rsi, [rbp + current_match_offset!()]
+        ; test rsi, rsi
         ; jz >no_match
-        ; mov reg2, [rbp + result_offset!()]
-        ; add curr_thd_data, mem
-        ; mov input_len, [rbp + result_len_offset!()]
-        ;; {
-        // We always unroll this loop, but maybe this should depend
-        // on the number of capture groups.
-        // We could also call memcopy.
-        for i in 0..jit.register_count {
-            // TODO: As always fix this offsets
-            let offset = (i*ptr_size!()) as i32;
-            __!(jit.ops,
-              // This is result_len
-              cmp input_len, (i as u32).cast_signed()
-            ; jbe >return_
-            ; mov reg1, [curr_thd_data + offset]
-            ; mov [reg2 + offset], reg1
-            )
-        }
-        }
+        ; add rsi, mem
+        ; mov rdi, [rbp + result_offset!()]
+        ; mov rcx, [rbp + result_len_offset!()]
+        // This assumes that result_len <= array_len, which is checked before calling this code
+        // We could also take the minimum between the two, but
+        ; rep movsq
         ; return_:
         ; mov rax, 1
         ;; jit.epilogue()
@@ -168,6 +155,7 @@ impl CGImpl for CGImplArray {
         ; add reg2, (Self::array_size(jit) as u32).cast_signed()
         ; mov [cg_reg], reg2
         ; array_copy:
+        // TODO: using rep movs did not seem to improve performance
         ;; {
         for i in 0..jit.register_count {
             let offset = (i * ptr_size!()) as i32;
