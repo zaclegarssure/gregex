@@ -2,12 +2,12 @@
 
 use std::{cmp::min, collections::VecDeque, error::Error, mem};
 
-use regex_syntax::Parser;
+use regex_syntax::{Parser, hir::Look};
 
 use crate::{
     regex::{Config, RegexImpl},
     thompson::bytecode::{Bytecode, Compiler, Instruction::*},
-    util::{Char, Input, Match, Span},
+    util::{Char, Input, Match, Span, find_prev_char},
 };
 
 /// A so-called PikeVM.
@@ -194,7 +194,10 @@ impl PikeVM {
         })
     }
 
-    fn step(&self, state: &mut State, c: Char) {
+    /// Do one step of simulation, meaning stepping through all threads in the
+    /// active queue and simulating them until they either die, or successfully consumed
+    /// a character.
+    fn step(&self, state: &mut State, prev: Char, c: Char) {
         let bytecode = self.bytecode.instructions.as_slice();
         'next_active: while let Some(mut thread) = state.pop_active_until_not_visited() {
             loop {
@@ -259,6 +262,63 @@ impl PikeVM {
                         state.accept(thread);
                         break;
                     }
+                    Assertion(look) => match look {
+                        Look::Start => {
+                            if prev == Char::INPUT_BOUND {
+                                thread.pc += 1;
+                            } else {
+                                thread.free(state);
+                                break;
+                            }
+                        }
+                        Look::End => {
+                            if c == Char::INPUT_BOUND {
+                                thread.pc += 1;
+                            } else {
+                                thread.free(state);
+                                break;
+                            }
+                        }
+                        Look::StartLF => {
+                            if prev == Char::INPUT_BOUND || prev == '\n'.into() {
+                                thread.pc += 1;
+                            } else {
+                                thread.free(state);
+                                break;
+                            }
+                        }
+                        Look::EndLF => {
+                            if c == Char::INPUT_BOUND || c == '\n'.into() {
+                                thread.pc += 1;
+                            } else {
+                                thread.free(state);
+                                break;
+                            }
+                        }
+                        Look::StartCRLF => {
+                            if prev == Char::INPUT_BOUND
+                                || prev == '\n'.into()
+                                || (prev == '\r'.into() && c != '\n'.into())
+                            {
+                                thread.pc += 1;
+                            } else {
+                                thread.free(state);
+                                break;
+                            }
+                        }
+                        Look::EndCRLF => {
+                            if c == Char::INPUT_BOUND
+                                || c == '\r'.into()
+                                || (c == '\n'.into() && prev != '\r'.into())
+                            {
+                                thread.pc += 1;
+                            } else {
+                                thread.free(state);
+                                break;
+                            }
+                        }
+                        _ => todo!(),
+                    },
                     _ => {
                         thread.free(state);
                         break;
@@ -316,12 +376,15 @@ impl RegexImpl for PikeVM {
             first_match,
         } = input;
 
+        let mut prev_char = find_prev_char(subject, from);
+
         state.input_pos = from;
         let first_thread = state.new_thread(0);
         first_thread.write_reg(0, from, state);
         state.push_active(first_thread);
         for c in subject[from..to].chars() {
-            self.step(state, c.into());
+            self.step(state, prev_char, c.into());
+            prev_char = c.into();
             match &state.best_match {
                 Some(_) if first_match || state.next.is_empty() => {
                     state.write_best_match(captures);
@@ -341,20 +404,20 @@ impl RegexImpl for PikeVM {
                 }
             }
         }
+
         if to == subject.len() {
-            self.step(state, Char::INPUT_BOUND);
+            self.step(state, prev_char, Char::INPUT_BOUND);
         } else {
             // TODO: Find a nicer way to do this
             let c = subject[to..subject.len()].chars().next().unwrap().into();
-            self.step(state, c);
+            self.step(state, prev_char, c);
         }
-        // TODO avoid copy paste
-        match &state.best_match {
-            Some(_) => {
-                state.write_best_match(captures);
-                true
-            }
-            None => false,
+
+        if state.best_match.is_some() {
+            state.write_best_match(captures);
+            true
+        } else {
+            false
         }
     }
 }

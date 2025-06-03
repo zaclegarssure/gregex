@@ -261,6 +261,29 @@ impl From<Char> for u32 {
     }
 }
 
+impl From<Char> for i32 {
+    fn from(value: Char) -> Self {
+        value.0.cast_signed()
+    }
+}
+
+/// Given a (valid) position in a str, returns the previous character.
+///
+/// Since assertions require knowing which Char appeared before the current
+/// one, and that at the beginning of the matching process we don't know
+/// what is the first previous-char (except if from == 0) we must look for
+/// it.
+pub(crate) fn find_prev_char(s: &str, to: usize) -> Char {
+    if to == 0 {
+        return Char::INPUT_BOUND;
+    }
+    let mut from = to - 1;
+    while !s.is_char_boundary(from) {
+        from -= 1;
+    }
+    s[from..to].chars().next().unwrap().into()
+}
+
 /// A character interval where both bounds are inclusive. If the lower bound is
 /// greater than the upper bound, then the interval is considered empty.
 #[derive(Debug, Clone, Copy)]

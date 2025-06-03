@@ -26,11 +26,12 @@ pub enum Instruction {
     ForkN(Box<[usize]>),
     Jmp(usize),
     WriteReg(u32),
+    Assertion(Look),
     Accept,
 }
 
 use Instruction::*;
-use regex_syntax::hir::{Capture, Class, Hir, HirKind, Literal, Repetition};
+use regex_syntax::hir::{Capture, Class, Hir, HirKind, Literal, Look, LookSet, Repetition};
 
 /// Compilation error
 /// TODO: Explain why each of these senario can occure
@@ -77,9 +78,9 @@ impl Compiler {
         if !hir.properties().is_utf8() {
             return Err(CompileError::InvalidUtf8);
         }
-        if !hir.properties().look_set().is_empty() {
-            return Err(CompileError::ContainsLookAround);
-        }
+        // if !hir.properties().look_set().is_empty() {
+        // return Err(CompileError::ContainsLookAround);
+        // }
         let mut compiler = Compiler {
             config,
             ..Default::default()
@@ -142,7 +143,9 @@ impl Compiler {
                     self.push(ConsumeClass(class));
                 }
             }
-            HirKind::Look(_) => unreachable!(),
+            HirKind::Look(look) => {
+                self.push(Assertion(look));
+            }
             HirKind::Repetition(Repetition {
                 min,
                 max,

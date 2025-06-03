@@ -10,7 +10,7 @@ impl CGImplArray {
     }
 
     fn array_size(jit: &PikeJIT) -> usize {
-        jit.capture_count * ptr_size!()
+        jit.register_count * ptr_size!()
     }
 
     fn free_all_threads_in_active(jit: &mut PikeJIT) {
@@ -72,7 +72,7 @@ impl CGImpl for CGImplArray {
         // We always unroll this loop, but maybe this should depend
         // on the number of capture groups.
         // We could also call memcopy.
-        for i in 0..jit.capture_count {
+        for i in 0..jit.register_count {
             // TODO: As always fix this offsets
             let offset = (i*ptr_size!()) as i32;
             __!(jit.ops,
@@ -143,7 +143,7 @@ impl CGImpl for CGImplArray {
         ; mov [cg_reg], reg1
         ; set_all_to_invalid:
         ;; {
-        for i in 0..jit.capture_count {
+        for i in 0..jit.register_count {
             let offset = i * ptr_size!();
             if i % 2 == 0 {
                 __!(jit.ops, mov QWORD [mem + curr_thd_data + offset as i32], 1);
@@ -168,7 +168,7 @@ impl CGImpl for CGImplArray {
         ; mov [cg_reg], reg2
         ; array_copy:
         ;; {
-        for i in 0..jit.capture_count {
+        for i in 0..jit.register_count {
             let offset = (i * ptr_size!()) as i32;
             __!(jit.ops,
               mov reg2, [mem + curr_thd_data + offset]

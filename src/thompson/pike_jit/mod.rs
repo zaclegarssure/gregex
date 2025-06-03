@@ -11,10 +11,11 @@ use dynasmrt::{
     x64::Assembler,
 };
 use regex_syntax::Parser;
+use regex_syntax::hir::Look;
 
 use crate::regex::{Config, RegexImpl};
 use crate::thompson::bytecode::Instruction;
-use crate::util::{Char, Input, Match, Span};
+use crate::util::{Char, Input, Match, Span, find_prev_char};
 
 use super::bytecode::{Bytecode, Compiler};
 
@@ -34,7 +35,7 @@ macro_rules! __ {
         ; .alias next_tail, r9
         ; .alias curr_top, r10
         ; .alias cg_reg, r11
-        ; .alias prev_char, r12
+        ; .alias prev_char, r12d
         ; .alias reg1, r13
         ; .alias reg1d, r13d
         ; .alias reg2, r14
@@ -64,6 +65,7 @@ cst!(return_addr_offset, frame_ptr_offset!() + ptr_size!());
 cst!(span_start_offset, return_addr_offset!() + ptr_size!());
 cst!(span_end_offset, span_start_offset!() + ptr_size!());
 cst!(return_on_accept, span_end_offset!() + ptr_size!());
+cst!(prev_char_offset, return_on_accept!() + ptr_size!());
 cst!(result_offset, frame_ptr_offset!() - ptr_size!());
 cst!(result_len_offset, result_offset!() - ptr_size!());
 cst!(saved_rbx_offset, result_len_offset!() - ptr_size!());
@@ -250,18 +252,31 @@ impl JittedRegex {
             anchored,
         } = input;
 
+        let prev_char = find_prev_char(subject, span.from);
+
         // API:
         // subject: *const u8 -> rdi
         // subject_len: u64 -> rsi
-        // result: *mut u64 -> rdx
+        // result: *mut Span -> rdx
         // result_len: u64 -> rcx
         // mem: *mut u8 -> r8
         // mem_size : u64 -> r9
         // from: u64 -> rbp+8
         // to: u64 -> rbp+16
         // first_match: u64 -> rbp+24
-        type ExecSig =
-            extern "sysv64" fn(*const u8, u64, *mut u64, u64, *mut u8, u64, u64, u64, u64) -> u8;
+        // prev_char: u32 -> rbp+32
+        type ExecSig = extern "sysv64" fn(
+            *const u8,
+            u64,
+            *mut Span,
+            u64,
+            *mut u8,
+            u64,
+            u64,
+            u64,
+            u64,
+            Char,
+        ) -> u8;
 
         let f: ExecSig = unsafe {
             if !anchored {
@@ -275,13 +290,17 @@ impl JittedRegex {
             subject.as_ptr(),
             subject.len() as u64,
             // TODO: This works because of repr(C) but needs something nicer I think
-            result.as_mut_ptr() as *mut u64,
+            result.as_mut_ptr(),
+            // TODO: This is the length in usize (yeah maybe we should use the array length instead)
             (result.len() * 2) as u64,
+            // Pass this as a *mut State
             state.mem,
             state.mem_len as u64,
             span.from as u64,
             span.to as u64,
+            // TODO: Pass this as a bool instead
             *first_match as u64,
+            prev_char,
         ) > 0
     }
 
@@ -294,7 +313,7 @@ pub struct PikeJIT {
     ops: Assembler,
     instr_labels: Vec<DynamicLabel>,
     outlined_class_labels: Vec<DynamicLabel>,
-    capture_count: usize,
+    register_count: usize,
     step_next_active: DynamicLabel,
     next_iter: DynamicLabel,
     next_iter_with_search: DynamicLabel,
@@ -328,7 +347,7 @@ impl PikeJIT {
 
     pub fn compile<CG: CGImpl>(
         bytecode: &Bytecode,
-        register_count: usize,
+        capture_count: usize,
     ) -> Result<JittedRegex, CompileError> {
         let mut ops = Assembler::new().map_err(|_| CompileError::FailedToCreateAssembler)?;
         let instr_labels = Vec::from_iter(
@@ -350,7 +369,7 @@ impl PikeJIT {
         let mut compiler = Self {
             ops,
             instr_labels,
-            capture_count: register_count * 2,
+            register_count: capture_count * 2,
             step_next_active,
             next_iter,
             next_iter_with_search,
@@ -385,6 +404,7 @@ impl PikeJIT {
          ;; CG::write_reg(&mut self, 0)
          ;; self.push_active(label0)
          ; =>self.fetch_next_char
+         ; mov prev_char, curr_char
          ; cmp input_len, input_pos
          ; je >input_end
          ;; self.decode_next_utf_8()
@@ -393,7 +413,7 @@ impl PikeJIT {
          // This character is not a valid utf-8 char and therefore it is fine to
          // use it to encode the end of input. This works because both the regex
          // and the input must only contain valid utf-8 chars.
-         ; mov curr_char, u32::MAX.cast_signed()
+         ; mov curr_char, Char::INPUT_BOUND.into()
 
          // The dispatch loop, simply pop active and dispatch
          ; =>self.step_next_active
@@ -446,7 +466,7 @@ impl PikeJIT {
             code,
             start,
             start_anchored,
-            register_count: self.capture_count,
+            register_count: self.register_count,
             visited_set_size,
             initial_mem_size,
         })
@@ -539,10 +559,13 @@ impl PikeJIT {
         ; push r13
         ; push r14
         ; push r15
-        // Initialize input_pos, input_end and mem_size
+        // Initialize input_pos, input_end, mem_size and prev_char
         ; mov [rbp + mem_size_offset!()], r9
         ; mov input_pos, [rbp + span_start_offset!()]
         ; mov span_end, [rbp + span_end_offset!()]
+        // We set curr_char, because the first thing we do after the prologue is to
+        // swap curr_char with prev_char, and fetch the next char in curr_char
+        ; mov curr_char, [rbp + prev_char_offset!()]
         // Okay so push immediate does not support 64bits value with this
         // library. Therefore we do it manually.
         ; sub rsp, (4*ptr_size!())
@@ -610,6 +633,7 @@ impl PikeJIT {
             Instruction::ConsumeOutlined(class_id) => {
                 self.compile_consume_outlined::<CG>(i, *class_id)
             }
+            Instruction::Assertion(look) => self.compile_assertion::<CG>(i, *look),
         }
     }
 
@@ -800,5 +824,76 @@ impl PikeJIT {
 
         ; done:
         )
+    }
+
+    fn compile_assertion<CG: CGImpl>(&mut self, i: usize, look: Look) {
+        match look {
+            Look::Start => {
+                __!(self.ops,
+                  cmp prev_char,  Char::INPUT_BOUND.into()
+                ; je =>self.instr_labels[i+1]
+                ;; CG::free_curr_thread(self)
+                ; jmp =>self.step_next_active
+                )
+            }
+            Look::End => {
+                __!(self.ops,
+                  cmp curr_char, Char::INPUT_BOUND.into()
+                ; je =>self.instr_labels[i+1]
+                ;; CG::free_curr_thread(self)
+                ; jmp =>self.step_next_active
+                )
+            }
+            Look::StartLF => {
+                __!(self.ops,
+                  cmp prev_char,  Char::INPUT_BOUND.into()
+                ; je =>self.instr_labels[i+1]
+                ; cmp prev_char,  ('\n' as u32).cast_signed()
+                ; je =>self.instr_labels[i+1]
+                ;; CG::free_curr_thread(self)
+                ; jmp =>self.step_next_active
+                )
+            }
+            Look::EndLF => {
+                __!(self.ops,
+                  cmp curr_char,  Char::INPUT_BOUND.into()
+                ; je =>self.instr_labels[i+1]
+                ; cmp curr_char,  ('\n' as u32).cast_signed()
+                ; je =>self.instr_labels[i+1]
+                ;; CG::free_curr_thread(self)
+                ; jmp =>self.step_next_active
+                )
+            }
+            Look::StartCRLF => {
+                __!(self.ops,
+                  cmp prev_char,  Char::INPUT_BOUND.into()
+                ; je =>self.instr_labels[i+1]
+                ; cmp prev_char,  ('\n' as u32).cast_signed()
+                ; je =>self.instr_labels[i+1]
+                ; cmp prev_char,  ('\r' as u32).cast_signed()
+                ; jne >fail
+                ; cmp curr_char,  ('\n' as u32).cast_signed()
+                ; jne =>self.instr_labels[i+1]
+                ; fail:
+                ;; CG::free_curr_thread(self)
+                ; jmp =>self.step_next_active
+                )
+            }
+            Look::EndCRLF => {
+                __!(self.ops,
+                  cmp curr_char,  Char::INPUT_BOUND.into()
+                ; je =>self.instr_labels[i+1]
+                ; cmp curr_char,  ('\r' as u32).cast_signed()
+                ; je =>self.instr_labels[i+1]
+                ; cmp curr_char,  ('\n' as u32).cast_signed()
+                ; jne >fail
+                ; cmp prev_char,  ('\r' as u32).cast_signed()
+                ; jne =>self.instr_labels[i+1]
+                ; fail:
+                ;; CG::free_curr_thread(self)
+                ; jmp =>self.step_next_active)
+            }
+            _ => todo!(),
+        }
     }
 }

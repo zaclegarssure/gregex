@@ -1,3 +1,6 @@
+- Pass prev char as a parameter to jit code
+- CG-trees, pass memory as a ptr to allow resizing
+- See if finding the previous char slow downs things (a.k.a make it part of the state and don't reset it on find_all)
 - Word boundaries
 - Rethink the RegexImpl API to see if we really need anything more than just search_spans
 - Write design doc and record results
