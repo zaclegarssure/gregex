@@ -11,3 +11,5 @@
 - Better memcpy in jit
 - Fat threads with cg0 inlined ?
 - More flags
+- Custom parser (pls)
+- Figure out why big unicod classes seem to be slower in this engine

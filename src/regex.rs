@@ -223,11 +223,12 @@ impl<'r, 's> Iterator for AllMatch<'r, 's> {
         }
         let result = match &mut self.imp {
             EngineWithState::PikeVM(pike_vm, state) => {
+                // TODO: Add soft reset
                 pike_vm.reset_state(state);
                 pike_vm.exec(self.input.clone(), state, &mut self.spans)
             }
             EngineWithState::JittedRegex(jitted_regex, state) => {
-                jitted_regex.reset_state(state);
+                // TODO: Explain why we don't need to reset the state
                 jitted_regex.exec(self.input.clone(), state, &mut self.spans)
             }
         };
@@ -261,7 +262,6 @@ impl<'r, 's> Iterator for AllCaptures<'r, 's> {
             }
             EngineWithState::JittedRegex(jitted_regex, state) => {
                 // Actually we don't need to reset the state for, well, interesting reasons
-                jitted_regex.reset_state(state);
                 jitted_regex.exec(self.input.clone(), state, &mut self.spans)
             }
         };
