@@ -249,6 +249,10 @@ impl From<char> for Char {
     }
 }
 
+/// This is a slight hack, since u8 is used to match bytes, but since Char is
+/// essentially a wrapper around u32, encoding raw bytes with it is fine Note
+/// however that fmt::Debug will make no sense if this is used to print a Char
+/// which encodes a byte greater than ASCII::MAX
 impl From<u8> for Char {
     fn from(value: u8) -> Self {
         (value as char).into()
@@ -261,6 +265,8 @@ impl From<Char> for u32 {
     }
 }
 
+/// Used to simplify the jit-code, since 32bit literals are encoded
+/// using i32 rathern u32.
 impl From<Char> for i32 {
     fn from(value: Char) -> Self {
         value.0.cast_signed()

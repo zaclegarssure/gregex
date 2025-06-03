@@ -7,7 +7,7 @@ use regex_syntax::{Parser, hir::Look};
 use crate::{
     regex::{Config, RegexImpl},
     thompson::bytecode::{Bytecode, Compiler, Instruction::*},
-    util::{Char, Input, Match, Span, find_prev_char},
+    util::{Char, Input, Span, find_prev_char},
 };
 
 /// A so-called PikeVM.
@@ -344,25 +344,7 @@ impl RegexImpl for PikeVM {
         state.reset();
     }
 
-    fn find<'s>(&self, input: Input<'s>, state: &mut Self::State) -> Option<Match<'s>> {
-        let subject = input.subject;
-        let mut captures = vec![Span::invalid(); self.capture_count()].into_boxed_slice();
-        if !self.find_captures(input, state, &mut captures) {
-            return None;
-        }
-
-        Some(Match {
-            subject,
-            span: captures[0],
-        })
-    }
-
-    fn find_captures<'s>(
-        &self,
-        input: Input<'s>,
-        state: &mut Self::State,
-        captures: &mut [Span],
-    ) -> bool {
+    fn exec<'s>(&self, input: Input<'s>, state: &mut Self::State, captures: &mut [Span]) -> bool {
         if !input.valid() {
             return false;
         }

@@ -15,7 +15,7 @@ use regex_syntax::hir::Look;
 
 use crate::regex::{Config, RegexImpl};
 use crate::thompson::bytecode::Instruction;
-use crate::util::{Char, Input, Match, Span, find_prev_char};
+use crate::util::{Char, Input, Span, find_prev_char};
 
 use super::bytecode::{Bytecode, Compiler};
 
@@ -198,22 +198,7 @@ impl RegexImpl for JittedRegex {
         state.reset(self);
     }
 
-    fn find<'s>(&self, input: Input<'s>, state: &mut Self::State) -> Option<Match<'s>> {
-        let mut result = [Span::invalid()];
-        let has_match = self.exec_internal(&input, state, &mut result);
-        if !has_match {
-            return None;
-        }
-
-        Some(Match::new(input.subject, result[0]))
-    }
-
-    fn find_captures<'s>(
-        &self,
-        input: Input<'s>,
-        state: &mut Self::State,
-        captures: &mut [Span],
-    ) -> bool {
+    fn exec<'s>(&self, input: Input<'s>, state: &mut Self::State, captures: &mut [Span]) -> bool {
         self.exec_internal(&input, state, captures)
     }
 }

@@ -31,7 +31,7 @@ pub enum Instruction {
 }
 
 use Instruction::*;
-use regex_syntax::hir::{Capture, Class, Hir, HirKind, Literal, Look, LookSet, Repetition};
+use regex_syntax::hir::{Capture, Class, Hir, HirKind, Literal, Look, Repetition};
 
 /// Compilation error
 /// TODO: Explain why each of these senario can occure

@@ -1,5 +1,6 @@
 Implementation notes.
 ## TODO: Write about the following things
+- Le funny endianness probel with raw-utf8
 - Overall algo
 - Barrier tricks
 - Static dispatch via enum
