@@ -646,7 +646,18 @@ impl PikeJIT {
 
     fn compile_outlined_class(&mut self, i: usize, class: &[(Char, Char)]) {
         let label = self.outlined_class_labels[i];
-        __!(self.ops, =>label);
+
+        __!(self.ops, =>label
+        // I don't have any actual evidence for that "fast path", it just seems
+        // slow that for very large classes, if we are at the end of the input
+        // we compare this sentinel value agains every interval even though we
+        // know it will never match.
+        ; cmp curr_char, Char::INPUT_BOUND.into()
+        ; jne >next
+        ; mov reg1, 1
+        ; ret
+        ; next:
+        );
         for (from, to) in class {
             __!(self.ops,
                 cmp curr_char, (u32::from(*from)).cast_signed()
@@ -661,7 +672,6 @@ impl PikeJIT {
             ; next:
             )
         }
-        // TODO: When at the end of the string, we always go through all classes
         __!(self.ops,
           mov reg1, 1
         ; ret

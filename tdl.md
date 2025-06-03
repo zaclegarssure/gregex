@@ -2,7 +2,6 @@
 - See if finding the previous char slow downs things (a.k.a make it part of the state and don't reset it on find_all)
 - Word boundaries
 - Write design doc and record results
-- Improve the perfromances of match-all-captures
 - Glushkov
 - Named capture groups, probably put some group info on the regex
 - Multipatterns
