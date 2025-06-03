@@ -17,7 +17,7 @@ fn main() {
             break;
         }
 
-        let jitted = match gregex::Builder::new(pattern).cg(false).pike_vm() {
+        let jitted = match gregex::Builder::new(pattern).pike_vm() {
             Ok(regex) => regex,
             Err(e) => {
                 print!("Error: {}", e);
@@ -40,7 +40,7 @@ fn main() {
             }
             match jitted.find_captures(input) {
                 Some(m) => {
-                    println!("Matched: {}", m.group0().as_str());
+                    println!("Matched: {:?}", m);
                 }
                 None => println!("No match."),
             }

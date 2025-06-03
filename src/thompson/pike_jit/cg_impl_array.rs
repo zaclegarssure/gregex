@@ -98,7 +98,8 @@ impl CGImpl for CGImplArray {
 
     fn init_mem_size(jit: &PikeJIT) -> usize {
         CGImplArray::free_list_size(jit)
-            + CGImplArray::array_size(jit) * jit.max_concurrent_threads()
+            // +1 for the current match
+            + CGImplArray::array_size(jit) * (jit.max_concurrent_threads() + 1)
     }
 
     fn initialize_cg_region(jit: &mut PikeJIT) {

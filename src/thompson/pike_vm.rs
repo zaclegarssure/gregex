@@ -84,7 +84,7 @@ impl State {
             visited: vec![0; state_count].into_boxed_slice(),
             best_match: None,
             cg_free: vec![0],
-            cg_arrays: vec![Span::invalid(); (state_count * 2 + 1) * capture_count]
+            cg_arrays: vec![Span::invalid(); (state_count * 3 + 1) * capture_count]
                 .into_boxed_slice(),
             capture_count,
             result_len: 0,
@@ -124,21 +124,6 @@ impl State {
 
     fn pop_active(&mut self) -> Option<Thread> {
         self.active.pop_front()
-    }
-
-    /// Pop the active queue until a thread whose pc was not visited already
-    /// during this iteration is found, and returns it.
-    fn pop_active_until_not_visited(&mut self) -> Option<Thread> {
-        while let Some(thread) = self.pop_active() {
-            let value = &mut self.visited[thread.pc];
-            if *value <= self.input_pos {
-                *value = self.input_pos + 1;
-                return Some(thread);
-            } else {
-                thread.free(self);
-            }
-        }
-        None
     }
 
     fn push_next(&mut self, thread: Thread) {
@@ -199,8 +184,18 @@ impl PikeVM {
     /// a character.
     fn step(&self, state: &mut State, prev: Char, c: Char) {
         let bytecode = self.bytecode.instructions.as_slice();
-        'next_active: while let Some(mut thread) = state.pop_active_until_not_visited() {
+        'next_active: while let Some(mut thread) = state.pop_active() {
             loop {
+                // Check barrier if needed
+                if self.bytecode.barriers[thread.pc] {
+                    let value = &mut state.visited[thread.pc];
+                    if *value <= state.input_pos {
+                        *value = state.input_pos + 1;
+                    } else {
+                        thread.free(state);
+                        break;
+                    }
+                }
                 match &bytecode[thread.pc] {
                     Consume(c2) if *c2 == c => {
                         state.push_next(thread.inc_pc());

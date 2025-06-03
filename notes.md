@@ -1,5 +1,6 @@
 Implementation notes.
 ## TODO: Write about the following things
+- Le funny e{n,m} which is *not* compiled as eeeee...e?e?e?....
 - Le funny endianness probel with raw-utf8
 - Overall algo
 - Barrier tricks

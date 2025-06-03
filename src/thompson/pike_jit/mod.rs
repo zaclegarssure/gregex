@@ -365,7 +365,8 @@ impl PikeJIT {
             compiler.compile_outlined_class(i, class);
         }
         for (i, instr) in bytecode.instructions.iter().enumerate() {
-            compiler.compile_instruction::<CG>(i, instr);
+            let barrier = bytecode.barriers[i];
+            compiler.compile_instruction::<CG>(i, instr, barrier);
         }
         compiler.assemble::<CG>()
     }
@@ -603,9 +604,16 @@ impl PikeJIT {
         )
     }
 
-    fn compile_instruction<CG: CGImpl>(&mut self, i: usize, instruction: &Instruction) {
+    fn compile_instruction<CG: CGImpl>(
+        &mut self,
+        i: usize,
+        instruction: &Instruction,
+        barrier: bool,
+    ) {
         self.bind_label(i);
-        self.check_has_visited::<CG>(i);
+        if barrier {
+            self.check_has_visited::<CG>(i);
+        }
         match instruction {
             Instruction::Consume(c) => self.compile_consume::<CG>(i, *c),
             Instruction::ConsumeAny => self.compile_consume_any(i),
@@ -653,6 +661,11 @@ impl PikeJIT {
             ; next:
             )
         }
+        // TODO: When at the end of the string, we always go through all classes
+        __!(self.ops,
+          mov reg1, 1
+        ; ret
+        )
     }
 
     fn bind_label(&mut self, i: usize) {
