@@ -86,6 +86,7 @@ impl Compiler {
         };
         compiler.compile_internal(hir, false);
         compiler.push(Accept, false);
+        println!("Bytecode = {:?}", compiler.bytecode);
         Ok(compiler.bytecode)
     }
 

@@ -4,6 +4,7 @@ use std::fmt::Display;
 use std::{fmt, mem};
 
 use cg_impl_array::CGImplArray;
+use cg_impl_cow_array::CGImplCowArray;
 use cg_impl_register::CGImplReg;
 use cg_implementation::CGImpl;
 use dynasmrt::{
@@ -79,6 +80,7 @@ cst!(mem_size_offset, curr_top_init_offset!() - ptr_size!());
 cst!(last_saved_value_offset, mem_size_offset!());
 
 pub mod cg_impl_array;
+pub mod cg_impl_cow_array;
 pub mod cg_impl_register;
 pub mod cg_implementation;
 
@@ -218,7 +220,7 @@ impl JittedRegex {
         let s = if capture_count == 1 {
             PikeJIT::compile::<CGImplReg>(&bytecode, capture_count)?
         } else {
-            PikeJIT::compile::<CGImplArray>(&bytecode, capture_count)?
+            PikeJIT::compile::<CGImplCowArray>(&bytecode, capture_count)?
         };
         Ok(s)
     }

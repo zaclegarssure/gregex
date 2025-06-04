@@ -13,3 +13,7 @@
 - Make bytecode internal private
 - Fix 32 bits value thingy in jit
 - Explore binary search for (large) char classes
+- Prefix but cool
+- Hum, fix the
+- Lmao, fix local labels
+- CG-COW
