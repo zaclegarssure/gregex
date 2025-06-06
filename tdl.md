@@ -15,5 +15,3 @@
 - Explore binary search for (large) char classes
 - Prefix but cool
 - Hum, fix the
-- Lmao, fix local labels
-- CG-COW
