@@ -7,6 +7,7 @@ use std::{
     cmp::{max, min},
     fmt,
     ops::Range,
+    usize,
 };
 
 /// Defines the input parameter to most matching methods on a [`crate::Regex`].
@@ -93,7 +94,10 @@ impl Span {
 
     /// Returns a span that is always considered invalid.
     pub fn invalid() -> Span {
-        Span { from: 1, to: 0 }
+        Span {
+            from: usize::MAX,
+            to: 0,
+        }
     }
 }
 

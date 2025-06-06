@@ -6,6 +6,7 @@ use std::{fmt, mem};
 use cg_impl_array::CGImplArray;
 use cg_impl_cow_array::CGImplCowArray;
 use cg_impl_register::CGImplReg;
+use cg_impl_tree::CGImplTree;
 use cg_implementation::CGImpl;
 use dynasmrt::{
     AssemblyOffset, DynamicLabel, DynasmApi, DynasmLabelApi, ExecutableBuffer, dynasm,
@@ -159,7 +160,8 @@ impl State {
     pub fn ensure_capacity(&mut self, mem_len: usize) {
         if mem_len > self.mem_len {
             let layout = Layout::array::<u64>(self.mem_len).unwrap();
-            let new_mem = unsafe { alloc::realloc(self.mem as *mut u8, layout, mem_len) };
+            let new_mem =
+                unsafe { alloc::realloc(self.mem as *mut u8, layout, mem_len * size_of::<u64>()) };
 
             if new_mem.is_null() {
                 panic!()
@@ -170,9 +172,9 @@ impl State {
         }
     }
 
-    // pub fn double_size(&mut self) {
-    //     self.ensure_capacity(2 * self.mem_len);
-    // }
+    pub fn double_size(&mut self) {
+        self.ensure_capacity(2 * self.mem_len);
+    }
 
     /// Reset the state for the given regex.
     /// Called before executing.
@@ -186,11 +188,22 @@ impl State {
     }
 }
 
-extern "sysv64" fn _double_mem_size(state: *mut State) -> *mut State {
+extern "sysv64" fn double_mem_size(state: *mut State) -> *mut State {
     // SAFETY: TODO
-    // unsafe {
-    //     state.as_mut().unwrap_unchecked().double_size();
-    // }
+    unsafe {
+        let mem_len = (*state).mem_len;
+        let mem = (*state).mem;
+        let new_len = 2 * mem_len;
+        let layout = Layout::array::<u64>(mem_len).unwrap();
+        let new_mem = alloc::realloc(mem as *mut u8, layout, new_len * size_of::<u64>());
+
+        if new_mem.is_null() {
+            panic!()
+        }
+
+        (*state).mem = mem;
+        (*state).mem_len = new_len;
+    }
     state
 }
 
@@ -225,7 +238,7 @@ impl JittedRegex {
         let s = if capture_count == 1 {
             PikeJIT::compile::<CGImplReg>(&bytecode, capture_count)?
         } else {
-            PikeJIT::compile::<CGImplCowArray>(&bytecode, capture_count)?
+            PikeJIT::compile::<CGImplTree>(&bytecode, capture_count)?
         };
         Ok(s)
     }
@@ -278,6 +291,7 @@ impl JittedRegex {
                 mem::transmute::<*const u8, ExecSig>(self.code.ptr(self.start_anchored))
             }
         };
+        let result_len = (result.len() * 2) as u64;
 
         f(
             subject.as_ptr(),
@@ -285,8 +299,7 @@ impl JittedRegex {
             // TODO: This works because of repr(C) but needs something nicer I think
             result.as_mut_ptr(),
             // TODO: This is the length in usize (yeah maybe we should use the array length instead)
-            (result.len() * 2) as u64,
-            // Pass this as a *mut State
+            result_len,
             state as *mut State,
             span.from as u64,
             span.to as u64,
@@ -378,10 +391,14 @@ impl PikeJIT {
         compiler.assemble::<CG>()
     }
 
-    fn ensure_mem_capacity(&mut self, additional_space: usize) {
-        // __!(self.ops,
-        // mov reg1, [rbp + mem_size_offset!()]
-        // )
+    fn set_and_align_sp(&mut self, value: i32) {
+        __!(self.ops,
+            lea rsp, [rbp + value]
+        );
+        if (value % 16) != 0 {
+            debug_assert!((value.rem_euclid(16)) == 8);
+            __!(self.ops, sub rsp, 8)
+        }
     }
 
     fn assemble<CG: CGImpl>(mut self) -> Result<JittedRegex, CompileError> {
@@ -403,6 +420,7 @@ impl PikeJIT {
          ;; CG::write_reg(&mut self, 0)
          ;; self.push_active(label0)
          ; =>self.fetch_next_char
+         ;; CG::at_fetch_next_char(&mut self)
          ; mov prev_char, curr_char
          ; cmp input_len, input_pos
          ; je >input_end
@@ -550,6 +568,14 @@ impl PikeJIT {
         3 * self.instr_labels.len()
     }
 
+    #[allow(clippy::fn_to_numeric_cast)]
+    fn grow_memory(&mut self) {
+        __!(self.ops,
+          mov rax, QWORD double_mem_size as i64
+        ; call rax
+        )
+    }
+
     fn prologue<CG: CGImpl>(&mut self) {
         __!(self.ops,
           push rbp
@@ -579,7 +605,7 @@ impl PikeJIT {
         // Initialize curr_top, next_tail and saved them on the stack for easier
         // swapping. Okay movabs is broken
         // TODO FIX THIS
-        ; mov rax, ((self.queue_start() + ((self.queue_size() * ptr_size!())/2)) as i32)
+        ; mov rax, QWORD ((self.queue_start() + ((self.queue_size() * ptr_size!())/2)) as i64)
         ; add rax, mem
         ; mov QWORD [rbp + (curr_top_init_offset!())], rax
         ; mov curr_top, rax

@@ -98,7 +98,7 @@ impl Regex {
                 }
             }
         }
-        Some(Captures::new(subject, spans))
+        Some(Captures::new(subject, spans.clone()))
     }
 
     /// Rerturns an interator over all non-overlapping match in the input, with

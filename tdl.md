@@ -11,9 +11,11 @@
 - Custom parser (pls)
 - Figure out why big unicod classes seem to be slower in this engine
 - Make bytecode internal private
-- Fix 32 bits value thingy in jit
+- Fix 32 bits value thingy in jit (OKay I found the fix I'm dumb)
 - Explore binary search for (large) char classes
 - Prefix but cool
 - Hum, fix the
 - Instead of aligning to 8 bytes (because we are on a 64bit platform), align
   to sizeof::<usize>(), in order to reuse as much logic for various platforms.
+- Pass the result len in term of spans, not in term of regiserse
+- Rethink mem_size of State
