@@ -4,7 +4,6 @@ use dynasmrt::{DynasmApi, DynasmLabelApi, dynasm};
 use super::cg_implementation::CGImpl;
 
 /// CG implementation when no capture groups are present.
-/// This encode
 pub struct CGImplReg;
 
 // Since there are no capture group, the match fits on 2 usize,

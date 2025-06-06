@@ -6,12 +6,12 @@ pub struct CGImplCowArray;
 
 impl CGImplCowArray {
     fn free_list_size(jit: &PikeJIT) -> usize {
-        (jit.max_concurrent_threads() + 2) * ptr_size!()
+        jit.max_concurrent_threads() + 2
     }
 
     fn array_size(jit: &PikeJIT) -> usize {
         // +1 for the rc count
-        (jit.register_count + 1) * ptr_size!()
+        jit.register_count + 1
     }
 
     fn free_all_threads_in_active(jit: &mut PikeJIT) {
@@ -26,13 +26,6 @@ impl CGImplCowArray {
         ; jmp <loop_
         ; end:
         )
-    }
-
-    fn load_rc_count(jit: &mut PikeJIT) {
-        let offset = (jit.register_count * ptr_size!()) as i32;
-        __!(jit.ops,
-            mov reg1, [mem + curr_thd_data + offset]
-        );
     }
 }
 
@@ -153,7 +146,7 @@ impl CGImpl for CGImplCowArray {
         ; empty_case:
         ; mov reg1, [cg_reg]
         ; mov curr_thd_data, reg1
-        ; add reg1, (Self::array_size(jit) as u32).cast_signed()
+        ; add reg1, ((Self::array_size(jit) * ptr_size!()) as u32).cast_signed()
         ; mov [cg_reg], reg1
         ; set_all_to_invalid:
         ;; {
@@ -180,7 +173,7 @@ impl CGImpl for CGImplCowArray {
         ; empty_case:
         ; mov reg1, [cg_reg]
         ; mov reg2, reg1
-        ; add reg2, (Self::array_size(jit) as u32).cast_signed()
+        ; add reg2, ((Self::array_size(jit) * ptr_size!()) as u32).cast_signed()
         ; mov [cg_reg], reg2
         ; array_copy:
         // TODO: using rep movs did not seem to improve performance

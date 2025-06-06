@@ -63,8 +63,7 @@ macro_rules! cst {
 cst!(ptr_size, 8);
 cst!(frame_ptr_offset, 0);
 cst!(return_addr_offset, frame_ptr_offset!() + ptr_size!());
-cst!(span_start_offset, return_addr_offset!() + ptr_size!());
-cst!(span_end_offset, span_start_offset!() + ptr_size!());
+cst!(span_end_offset, return_addr_offset!() + ptr_size!());
 cst!(return_on_accept, span_end_offset!() + ptr_size!());
 cst!(prev_char_offset, return_on_accept!() + ptr_size!());
 cst!(result_offset, frame_ptr_offset!() - ptr_size!());
@@ -76,12 +75,13 @@ cst!(saved_r14_offset, saved_r13_offset!() - ptr_size!());
 cst!(saved_r15_offset, saved_r14_offset!() - ptr_size!());
 cst!(next_tail_init_offset, saved_r15_offset!() - ptr_size!());
 cst!(curr_top_init_offset, next_tail_init_offset!() - ptr_size!());
-cst!(mem_size_offset, curr_top_init_offset!() - ptr_size!());
-cst!(last_saved_value_offset, mem_size_offset!());
+cst!(state_ptr_offset, curr_top_init_offset!() - ptr_size!());
+cst!(last_saved_value_offset, state_ptr_offset!());
 
 pub mod cg_impl_array;
 pub mod cg_impl_cow_array;
 pub mod cg_impl_register;
+pub mod cg_impl_tree;
 pub mod cg_implementation;
 
 #[derive(Debug)]
@@ -100,7 +100,8 @@ pub struct JittedRegex {
 #[derive(Debug)]
 #[repr(C)]
 pub struct State {
-    mem: *mut u8,
+    /// We use u64 to make sure things are aligned
+    mem: *mut u64,
     mem_len: usize,
 }
 
@@ -108,21 +109,24 @@ impl Drop for State {
     fn drop(&mut self) {
         // SAFETY: The pointer is owned.
         unsafe {
-            alloc::dealloc(self.mem, Layout::array::<u8>(self.mem_len).unwrap());
+            alloc::dealloc(
+                self.mem as *mut u8,
+                Layout::array::<u64>(self.mem_len).unwrap(),
+            );
         }
     }
 }
 
 impl Clone for State {
     fn clone(&self) -> Self {
-        let layout = Layout::array::<u8>(self.mem_len).unwrap();
+        let layout = Layout::array::<u64>(self.mem_len).unwrap();
         // SAFETY:
         // The allocation has nothing in particular.
         // The memcopy works because both pointers are from two different
         // allocations (therefore non overlapping). And they were both allocated
         // with the same length.
         let mem = unsafe {
-            let mem = alloc::alloc(layout);
+            let mem = alloc::alloc(layout) as *mut u64;
             std::ptr::copy_nonoverlapping(self.mem, mem, self.mem_len);
             mem
         };
@@ -141,9 +145,9 @@ unsafe impl Send for State {}
 impl State {
     /// Allocate a new State of the given size in bytes.
     pub fn new(mem_len: usize) -> Self {
-        let layout = Layout::array::<u8>(mem_len).unwrap();
+        let layout = Layout::array::<u64>(mem_len).unwrap();
         // SAFETY: That's just an allocation.
-        let mem = unsafe { alloc::alloc_zeroed(layout) };
+        let mem = unsafe { alloc::alloc_zeroed(layout) as *mut u64 };
         if mem.is_null() {
             panic!()
         }
@@ -154,17 +158,21 @@ impl State {
     /// by reallocating if it is too small.
     pub fn ensure_capacity(&mut self, mem_len: usize) {
         if mem_len > self.mem_len {
-            let layout = Layout::array::<u8>(self.mem_len).unwrap();
-            let new_mem = unsafe { alloc::realloc(self.mem, layout, mem_len) };
+            let layout = Layout::array::<u64>(self.mem_len).unwrap();
+            let new_mem = unsafe { alloc::realloc(self.mem as *mut u8, layout, mem_len) };
 
             if new_mem.is_null() {
                 panic!()
             }
 
-            self.mem = new_mem;
+            self.mem = new_mem as *mut u64;
             self.mem_len = mem_len;
         }
     }
+
+    // pub fn double_size(&mut self) {
+    //     self.ensure_capacity(2 * self.mem_len);
+    // }
 
     /// Reset the state for the given regex.
     /// Called before executing.
@@ -178,14 +186,11 @@ impl State {
     }
 }
 
-extern "sysv64" fn _ensure_capacity(state: *mut State, new_capacity: usize) -> *mut State {
+extern "sysv64" fn _double_mem_size(state: *mut State) -> *mut State {
     // SAFETY: TODO
-    unsafe {
-        state
-            .as_mut()
-            .unwrap_unchecked()
-            .ensure_capacity(new_capacity);
-    }
+    // unsafe {
+    //     state.as_mut().unwrap_unchecked().double_size();
+    // }
     state
 }
 
@@ -249,19 +254,17 @@ impl JittedRegex {
         // subject_len: u64 -> rsi
         // result: *mut Span -> rdx
         // result_len: u64 -> rcx
-        // mem: *mut u8 -> r8
-        // mem_size : u64 -> r9
-        // from: u64 -> rbp+8
-        // to: u64 -> rbp+16
-        // first_match: u64 -> rbp+24
-        // prev_char: u32 -> rbp+32
+        // state: *mut State -> r8
+        // from: u64 -> r9
+        // to: u64 -> rbp+8
+        // first_match: u64 -> rbp+16
+        // prev_char: u32 -> rbp+24
         type ExecSig = extern "sysv64" fn(
             *const u8,
             u64,
             *mut Span,
             u64,
-            *mut u8,
-            u64,
+            *mut State,
             u64,
             u64,
             u64,
@@ -284,8 +287,7 @@ impl JittedRegex {
             // TODO: This is the length in usize (yeah maybe we should use the array length instead)
             (result.len() * 2) as u64,
             // Pass this as a *mut State
-            state.mem,
-            state.mem_len as u64,
+            state as *mut State,
             span.from as u64,
             span.to as u64,
             // TODO: Pass this as a bool instead
@@ -330,10 +332,10 @@ impl Display for CompileError {
 }
 
 impl PikeJIT {
-    // 8 bytes for the thread data and 8 for the code location
-    // Those 8 bytes could be compressed into 4 by saving
-    // just the offset of the code location.
-    const THREAD_SIZE: i32 = 16;
+    /// Each threads are 2 words long, one word for the pc, and one for
+    /// the cg-data (often a pointer).
+    const THREAD_SIZE: i32 = 2;
+    const THREAD_SIZE_BYTE: i32 = 16;
 
     pub fn compile<CG: CGImpl>(
         bytecode: &Bytecode,
@@ -374,6 +376,12 @@ impl PikeJIT {
             compiler.compile_instruction::<CG>(i, instr, barrier);
         }
         compiler.assemble::<CG>()
+    }
+
+    fn ensure_mem_capacity(&mut self, additional_space: usize) {
+        // __!(self.ops,
+        // mov reg1, [rbp + mem_size_offset!()]
+        // )
     }
 
     fn assemble<CG: CGImpl>(mut self) -> Result<JittedRegex, CompileError> {
@@ -465,7 +473,7 @@ impl PikeJIT {
 
     fn pop_active(&mut self) {
         __!(self.ops,
-          sub curr_top, Self::THREAD_SIZE
+          sub curr_top, Self::THREAD_SIZE_BYTE
         ; mov curr_thd_data, QWORD [curr_top]
         ; mov reg1, QWORD [curr_top + 8]
         )
@@ -476,7 +484,7 @@ impl PikeJIT {
           mov QWORD [curr_top], curr_thd_data
         ; lea reg1, [=>label]
         ; mov QWORD [curr_top + 8], reg1
-        ; add curr_top, Self::THREAD_SIZE
+        ; add curr_top, Self::THREAD_SIZE_BYTE
         )
     }
 
@@ -496,7 +504,7 @@ impl PikeJIT {
 
     fn push_next(&mut self, label: DynamicLabel) {
         __!(self.ops,
-          sub next_tail, Self::THREAD_SIZE
+          sub next_tail, Self::THREAD_SIZE_BYTE
         ; mov QWORD [next_tail], curr_thd_data
         ; lea reg1, [=>label]
         ; mov QWORD [next_tail + 8], reg1
@@ -507,12 +515,18 @@ impl PikeJIT {
      * |---------visited_set--------|-------queue_1------|-----queue2------|--------cg_space--------|
      */
 
+    /// Returns the size in words (okok in x64 words are 16bit, but here we mean 64bit)
+    /// Basically in sizeof::<usize>() if you will.
+    /// Everything in the state must be 8 bytes aligned, therefore memory size is
+    /// measured in multiples of 8bytes.
+    /// However offsets are in bytes, since those are directly used in mov instructions
     fn visited_set_size(&self) -> usize {
-        self.instr_labels.len() * ptr_size!()
+        self.instr_labels.len()
     }
 
+    /// Starting offset of the queues region (in *bytes*)
     fn queue_start(&self) -> usize {
-        self.visited_set_size()
+        self.visited_set_size() * ptr_size!()
     }
 
     fn queue_size(&self) -> usize {
@@ -528,7 +542,7 @@ impl PikeJIT {
     }
 
     fn cg_mem_start(&self) -> usize {
-        self.visited_set_size() + self.total_queue_size()
+        (self.visited_set_size() + self.total_queue_size()) * ptr_size!()
     }
 
     fn max_concurrent_threads(&self) -> usize {
@@ -550,9 +564,11 @@ impl PikeJIT {
         ; push r13
         ; push r14
         ; push r15
-        // Initialize input_pos, input_end, mem_size and prev_char
-        ; mov [rbp + mem_size_offset!()], r9
-        ; mov input_pos, [rbp + span_start_offset!()]
+        // Initialize mem, input_pos, input_end, state_ptr and prev_char
+        ; mov [rbp + state_ptr_offset!()], r8
+        // State is { mem: *mut u64, size: usize }, and is repr(c)
+        ; mov mem, [r8]
+        ; mov input_pos, r9
         ; mov span_end, [rbp + span_end_offset!()]
         // We set curr_char, because the first thing we do after the prologue is to
         // swap curr_char with prev_char, and fetch the next char in curr_char
@@ -563,11 +579,11 @@ impl PikeJIT {
         // Initialize curr_top, next_tail and saved them on the stack for easier
         // swapping. Okay movabs is broken
         // TODO FIX THIS
-        ; mov rax, ((self.queue_start() + (self.queue_size()/2)) as i32)
+        ; mov rax, ((self.queue_start() + ((self.queue_size() * ptr_size!())/2)) as i32)
         ; add rax, mem
         ; mov QWORD [rbp + (curr_top_init_offset!())], rax
         ; mov curr_top, rax
-        ; mov rax, ((self.queue_start() + ((3*self.queue_size())/2)) as i32)
+        ; mov rax, ((self.queue_start() + ((3*ptr_size!()*self.queue_size())/2)) as i32)
         // TODO: I think we need to decrement this to let a space for the sentinel
         ; add rax, mem
         ; mov QWORD [rbp + (next_tail_init_offset!())], rax

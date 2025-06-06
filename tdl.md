@@ -1,4 +1,4 @@
-- CG-trees, pass memory as a ptr to allow resizing
+- CG-trees
 - See if finding the previous char slow downs things (a.k.a make it part of the state and don't reset it on find_all)
 - Word boundaries
 - Write design doc and record results
@@ -15,3 +15,5 @@
 - Explore binary search for (large) char classes
 - Prefix but cool
 - Hum, fix the
+- Instead of aligning to 8 bytes (because we are on a 64bit platform), align
+  to sizeof::<usize>(), in order to reuse as much logic for various platforms.
