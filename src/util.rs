@@ -7,7 +7,6 @@ use std::{
     cmp::{max, min},
     fmt,
     ops::Range,
-    usize,
 };
 
 /// Defines the input parameter to most matching methods on a [`crate::Regex`].

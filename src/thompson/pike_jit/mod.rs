@@ -201,7 +201,7 @@ extern "sysv64" fn double_mem_size(state: *mut State) -> *mut State {
             panic!()
         }
 
-        (*state).mem = mem;
+        (*state).mem = new_mem as *mut u64;
         (*state).mem_len = new_len;
     }
     state
