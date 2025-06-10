@@ -1,3 +1,4 @@
+- Basic inlining
 - See if finding the previous char slow downs things (a.k.a make it part of the state and don't reset it on find_all)
 - Word boundaries
 - Write design doc and record results
@@ -19,3 +20,5 @@
 - Pass the result len in term of spans, not in term of regiserse
 - Rethink mem_size of State
 - Rethink regalloc
+- Rethink initial mem size of tree
+- Remove ConsumeAny

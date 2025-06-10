@@ -33,7 +33,7 @@ extern "sysv64" fn write_results(
         for i in 0..(reg_count / 2) {
             (*spans.add(i)) = Span::invalid();
         }
-        while tree as usize != 0 {
+        loop {
             let reg = (*tree).reg;
             let pos = (*tree).pos;
             let span_idx = reg / 2;
@@ -48,16 +48,27 @@ extern "sysv64" fn write_results(
                 }
             }
             let offset = (*tree).prev;
-            if offset == 0 {
+            if (offset as isize) <= 0 {
                 break;
             }
             tree = std::mem::transmute::<*const u64, *const Node>(mem.add(offset / 8));
         }
+        // Last group is always cg 0
+        let pos = (-((*tree).prev as isize)) as usize;
+        (*spans).from = pos;
     }
 }
 
 impl CGImpl for CGImplTree {
     fn write_reg(jit: &mut PikeJIT, reg: u32) {
+        if reg == 0 {
+            // Since curr_thd_data is init to 0, we set it to -inpu_pos, that way it is flagged as being cg_0
+            // and we avoid using memory
+            __!(jit.ops,
+             sub curr_thd_data, input_pos
+            );
+            return;
+        }
         __!(jit.ops,
           mov [mem + cg_reg], curr_thd_data
         ; mov [mem + cg_reg + 8], input_pos
