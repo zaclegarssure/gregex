@@ -3,8 +3,6 @@ use std::error::Error;
 use std::fmt::Display;
 use std::{fmt, mem};
 
-use cg_impl_array::CGImplArray;
-use cg_impl_cow_array::CGImplCowArray;
 use cg_impl_register::CGImplReg;
 use cg_impl_tree::CGImplTree;
 use cg_implementation::CGImpl;
@@ -260,7 +258,10 @@ impl JittedRegex {
             anchored,
         } = input;
 
-        let prev_char = find_prev_char(subject, span.from);
+        let from = span.from.min(subject.len());
+        let to = span.to.min(subject.len());
+
+        let prev_char = find_prev_char(subject, from);
 
         // API:
         // subject: *const u8 -> rdi
@@ -301,8 +302,8 @@ impl JittedRegex {
             // TODO: This is the length in usize (yeah maybe we should use the array length instead)
             result_len,
             state as *mut State,
-            span.from as u64,
-            span.to as u64,
+            from as u64,
+            to as u64,
             // TODO: Pass this as a bool instead
             *first_match as u64,
             prev_char,
@@ -435,7 +436,8 @@ impl PikeJIT {
          // The dispatch loop, simply pop active and dispatch
          ; =>self.step_next_active
          ;; self.pop_active()
-         ; jmp reg1
+         ; call reg1
+         ; jmp =>self.step_next_active
 
          // Called at then end of an iteration, meaning we step through all
          // threads in active, or we reached an accepting states (and therefore
@@ -443,6 +445,8 @@ impl PikeJIT {
          // This version is used in unanchored searches, where we spawn a new
          // thread everytime we start a new iteration
          ; =>self.next_iter_with_search
+         // This kinda sucks but we need to skip over one ret
+         ; add rsp, 8
          ; cmp input_pos, span_end
          ; je >return_result
          ; add input_pos, input_inc
@@ -457,6 +461,8 @@ impl PikeJIT {
          // anchored searches, or when an accpeting state has already been
          // reached.
          ; =>self.next_iter
+         // This kinda sucks but we need to skip over one ret
+         ; add rsp, 8
          ; cmp input_pos, span_end
          ; je >return_result
          ; add input_pos, input_inc
@@ -618,7 +624,7 @@ impl PikeJIT {
         )
     }
 
-    fn check_has_visited<CG: CGImpl>(&mut self, instr_index: usize) {
+    fn check_has_visited(&mut self, instr_index: usize) {
         // This limit the size of the input string,
         // The better way would be to load with an immediate
         // offset if instr_index fits in 31 bits, otherwise
@@ -631,8 +637,7 @@ impl PikeJIT {
         // That way 0 (which is what the memory is initialized to) can always
         // be crossed.
         ; jbe >success
-        ;; CG::free_curr_thread(self)
-        ; jmp =>self.step_next_active
+        ; ret
         ; success:
         ; lea reg1, [input_pos + 1]
         ; mov [mem + byte_offset], reg1
@@ -659,35 +664,31 @@ impl PikeJIT {
     ) {
         self.bind_label(i);
         if barrier {
-            self.check_has_visited::<CG>(i);
+            self.check_has_visited(i);
         }
         match instruction {
-            Instruction::Consume(c) => self.compile_consume::<CG>(i, *c),
+            Instruction::Consume(c) => self.compile_consume(i, *c),
             Instruction::ConsumeAny => self.compile_consume_any(i),
-            Instruction::ConsumeClass(class) => self.compile_consume_class::<CG>(i, class),
-            Instruction::Fork2(a, b) => self.compile_fork::<CG>(&[*a, *b]),
-            Instruction::ForkN(items) => self.compile_fork::<CG>(items),
+            Instruction::ConsumeClass(class) => self.compile_consume_class(i, class),
+            Instruction::Fork2(a, b) => self.compile_fork(&[*a, *b]),
+            Instruction::ForkN(items) => self.compile_fork(items),
             Instruction::Jmp(target) => self.compile_jump(*target),
             Instruction::WriteReg(reg) => self.compile_write_reg::<CG>(i, *reg),
             Instruction::Accept => self.compile_accept::<CG>(),
-            Instruction::ConsumeOutlined(class_id) => {
-                self.compile_consume_outlined::<CG>(i, *class_id)
-            }
-            Instruction::Assertion(look) => self.compile_assertion::<CG>(i, *look),
+            Instruction::ConsumeOutlined(class_id) => self.compile_consume_outlined(i, *class_id),
+            Instruction::Assertion(look) => self.compile_assertion(i, *look),
         }
     }
 
-    fn compile_consume_outlined<CG: CGImpl>(&mut self, i: usize, class_id: usize) {
+    fn compile_consume_outlined(&mut self, i: usize, class_id: usize) {
         let class_label = self.outlined_class_labels[class_id];
         __!(self.ops,
           call =>class_label
         ; test reg1, reg1
         ; jnz >fail
         ;; self.push_next(self.instr_labels[i+1])
-        ; jmp =>self.step_next_active
         ; fail:
-        ;; CG::free_curr_thread(self)
-        ; jmp =>self.step_next_active
+        ; ret
         )
     }
 
@@ -707,7 +708,7 @@ impl PikeJIT {
         );
         for (from, to) in class {
             __!(self.ops,
-                cmp curr_char, (u32::from(*from)).cast_signed()
+              cmp curr_char, (u32::from(*from)).cast_signed()
             ; jb >fail
             ; cmp curr_char, (u32::from(*to)).cast_signed()
             ; ja >next
@@ -730,44 +731,41 @@ impl PikeJIT {
         __!(self.ops, =>label)
     }
 
-    fn compile_consume<CG: CGImpl>(&mut self, i: usize, c: Char) {
+    fn compile_consume(&mut self, i: usize, c: Char) {
         let next_label = self.instr_labels[i + 1];
         __!(self.ops,
           cmp curr_char, ((u32::from(c)).cast_signed())
         ; jne >fail
         ;; self.push_next(next_label)
-        ; jmp =>self.step_next_active
         ; fail:
-        ;; CG::free_curr_thread(self)
-        ; jmp =>self.step_next_active
+        ; ret
         )
     }
 
     fn compile_consume_any(&mut self, i: usize) {
         let next_label = self.instr_labels[i + 1];
         self.push_next(next_label);
-        __!(self.ops, jmp =>self.step_next_active)
+        __!(self.ops, ret)
     }
 
-    fn compile_consume_class<CG: CGImpl>(&mut self, i: usize, class: &[(Char, Char)]) {
+    fn compile_consume_class(&mut self, i: usize, class: &[(Char, Char)]) {
         let fail = self.ops.new_dynamic_label();
         let next = self.ops.new_dynamic_label();
         for (from, to) in class {
             self.compile_consume_range(next, fail, *from, *to);
         }
         __!(self.ops,
-          =>fail
-        ;; CG::free_curr_thread(self)
-        ; jmp =>self.step_next_active
+            ret
         ; =>next
         ;; self.push_next(self.instr_labels[i+1])
-        ; jmp =>self.step_next_active
+        ; =>fail
+        ; ret
         )
     }
 
     fn compile_consume_range(
         &mut self,
-        next_label: DynamicLabel,
+        success_label: DynamicLabel,
         fail_label: DynamicLabel,
         from: Char,
         to: Char,
@@ -777,40 +775,45 @@ impl PikeJIT {
         ; jb =>fail_label
         ; cmp curr_char, (u32::from(to)).cast_signed()
         ; ja >next
-        ; jmp =>next_label
+        ; jmp =>success_label
         ; next:
         )
     }
 
-    fn compile_fork<CG: CGImpl>(&mut self, branches: &[usize]) {
-        let len = branches.len();
-        for i in (1..len).rev() {
-            let instr_i = branches[i];
-            self.push_active(self.instr_labels[instr_i]);
-            CG::clone_curr_thread(self);
+    fn compile_fork(&mut self, branches: &[usize]) {
+        for instr in branches {
+            __!(self.ops, call =>self.instr_labels[*instr]);
         }
-        __!(self.ops, jmp => self.instr_labels[branches[0]])
+        __!(self.ops, ret);
     }
 
     fn compile_jump(&mut self, target: usize) {
         let label = self.instr_labels[target];
-        __!(self.ops, jmp => label)
+        __!(self.ops, jmp =>label)
     }
 
     fn compile_write_reg<CG: CGImpl>(&mut self, i: usize, reg: u32) {
-        CG::write_reg(self, reg);
         let next_label = self.instr_labels[i + 1];
-        __!(self.ops, jmp =>next_label)
+        __!(self.ops,
+          push curr_thd_data
+        ;; CG::write_reg(self, reg)
+        ; call =>next_label
+        ; pop curr_thd_data
+        ; ret
+        );
     }
 
     fn compile_accept<CG: CGImpl>(&mut self) {
         CG::accept_curr_thread(self);
+        // Since we may have some threads active on the stack
+        // we simply reset it to its initial value
+        self.set_and_align_sp(CG::init_sp());
         __!(self.ops,
           mov reg1, [rbp + return_on_accept!()]
         ; test reg1, reg1
         ; jnz >return_result
         // Note: Here we jumpt to next_iter without starting a new thread
-        ; jmp => self.next_iter
+        ; call => self.next_iter
         ; return_result:
         ;; CG::return_result(self)
         )
@@ -881,22 +884,20 @@ impl PikeJIT {
         )
     }
 
-    fn compile_assertion<CG: CGImpl>(&mut self, i: usize, look: Look) {
+    fn compile_assertion(&mut self, i: usize, look: Look) {
         match look {
             Look::Start => {
                 __!(self.ops,
                   cmp prev_char,  Char::INPUT_BOUND.into()
                 ; je =>self.instr_labels[i+1]
-                ;; CG::free_curr_thread(self)
-                ; jmp =>self.step_next_active
+                ; ret
                 )
             }
             Look::End => {
                 __!(self.ops,
                   cmp curr_char, Char::INPUT_BOUND.into()
                 ; je =>self.instr_labels[i+1]
-                ;; CG::free_curr_thread(self)
-                ; jmp =>self.step_next_active
+                ; ret
                 )
             }
             Look::StartLF => {
@@ -905,8 +906,7 @@ impl PikeJIT {
                 ; je =>self.instr_labels[i+1]
                 ; cmp prev_char,  ('\n' as u32).cast_signed()
                 ; je =>self.instr_labels[i+1]
-                ;; CG::free_curr_thread(self)
-                ; jmp =>self.step_next_active
+                ; ret
                 )
             }
             Look::EndLF => {
@@ -915,8 +915,7 @@ impl PikeJIT {
                 ; je =>self.instr_labels[i+1]
                 ; cmp curr_char,  ('\n' as u32).cast_signed()
                 ; je =>self.instr_labels[i+1]
-                ;; CG::free_curr_thread(self)
-                ; jmp =>self.step_next_active
+                ; ret
                 )
             }
             Look::StartCRLF => {
@@ -930,8 +929,7 @@ impl PikeJIT {
                 ; cmp curr_char,  ('\n' as u32).cast_signed()
                 ; jne =>self.instr_labels[i+1]
                 ; fail:
-                ;; CG::free_curr_thread(self)
-                ; jmp =>self.step_next_active
+                ; ret
                 )
             }
             Look::EndCRLF => {
@@ -945,8 +943,8 @@ impl PikeJIT {
                 ; cmp prev_char,  ('\r' as u32).cast_signed()
                 ; jne =>self.instr_labels[i+1]
                 ; fail:
-                ;; CG::free_curr_thread(self)
-                ; jmp =>self.step_next_active)
+                ; ret
+                )
             }
             _ => todo!(),
         }

@@ -28,4 +28,6 @@ pub trait CGImpl {
     /// This is mostly usefull for implementations that may require the memory
     /// to grow at runtime.
     fn at_fetch_next_char(jit: &mut PikeJIT);
+
+    fn init_sp() -> i32;
 }

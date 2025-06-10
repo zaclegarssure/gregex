@@ -14,8 +14,17 @@ cst!(
 );
 
 impl CGImpl for CGImplReg {
-    fn init_mem_size(_: &PikeJIT) -> usize {
-        0
+    fn write_reg(jit: &mut PikeJIT, reg: u32) {
+        // The closing group operation is done at accept time
+        assert!(reg == 0);
+        __!(jit.ops, mov curr_thd_data, input_pos);
+    }
+
+    fn accept_curr_thread(jit: &mut PikeJIT) {
+        __!(jit.ops,
+          mov [rbp + current_match_offset!()], curr_thd_data
+        ; mov [rbp + current_match_offset!() + ptr_size!()], input_pos
+        )
     }
 
     fn return_result(jit: &mut PikeJIT) {
@@ -37,17 +46,8 @@ impl CGImpl for CGImplReg {
         )
     }
 
-    fn write_reg(jit: &mut PikeJIT, reg: u32) {
-        // The closing group operation is done at accept time
-        assert!(reg == 0);
-        __!(jit.ops, mov curr_thd_data, input_pos);
-    }
-
-    fn accept_curr_thread(jit: &mut PikeJIT) {
-        __!(jit.ops,
-          mov [rbp + current_match_offset!()], curr_thd_data
-        ; mov [rbp + current_match_offset!() + ptr_size!()], input_pos
-        )
+    fn init_mem_size(_: &PikeJIT) -> usize {
+        0
     }
 
     fn initialize_cg_region(jit: &mut PikeJIT) {
@@ -55,7 +55,7 @@ impl CGImpl for CGImplReg {
         __!(jit.ops,
           mov QWORD [rbp + current_match_offset!()], 1
         ; mov QWORD [rbp + current_match_offset!() + ptr_size!()], 0
-        ; lea rsp, [rbp + current_match_offset!()]
+        ;; jit.set_and_align_sp(current_match_offset!())
         )
     }
 
@@ -77,5 +77,9 @@ impl CGImpl for CGImplReg {
 
     fn at_fetch_next_char(_: &mut PikeJIT) {
         // Nothing to do
+    }
+
+    fn init_sp() -> i32 {
+        current_match_offset!()
     }
 }

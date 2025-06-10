@@ -97,7 +97,7 @@ impl CGImpl for CGImplTree {
 
     fn init_mem_size(jit: &PikeJIT) -> usize {
         // TODO: Figure out some goods bounds
-        // TODO: Make it depends on the number of write_cg ops
+        // TODO: Make it depends on the number of write_cg opS
         jit.max_concurrent_threads() * (size_of::<Node>() / size_of::<usize>()) * 4
     }
 
@@ -166,5 +166,9 @@ impl CGImpl for CGImplTree {
         ; pop rax
         ; enough_space:
         )
+    }
+
+    fn init_sp() -> i32 {
+        current_match_offset!()
     }
 }

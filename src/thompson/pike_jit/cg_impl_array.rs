@@ -94,7 +94,7 @@ impl CGImpl for CGImplArray {
         let array_start = (free_list_start + Self::free_list_size(jit)) as u32;
         __!(jit.ops,
           mov QWORD [rbp + current_match_offset!()], 0
-        ; lea rsp, [rbp + current_match_offset!()]
+        ;; jit.set_and_align_sp(current_match_offset!())
         ; lea cg_reg, [mem + (jit.cg_mem_start() as i32)]
         ; mov QWORD [cg_reg], array_start.cast_signed()
         )
@@ -171,5 +171,9 @@ impl CGImpl for CGImplArray {
 
     fn at_fetch_next_char(_: &mut PikeJIT) {
         // Nothing to do
+    }
+
+    fn init_sp() -> i32 {
+        current_match_offset!()
     }
 }

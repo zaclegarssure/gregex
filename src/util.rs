@@ -53,6 +53,16 @@ impl<'s> Input<'s> {
         self
     }
 
+    pub fn from(mut self, value: usize) -> Self {
+        self.span.from = value;
+        self
+    }
+
+    pub fn to(mut self, value: usize) -> Self {
+        self.span.to = value;
+        self
+    }
+
     /// Returns true if the span is valid and the boundaries are valid UTF-8 boundaries in the subject.
     pub fn valid(&self) -> bool {
         self.span.valid()
