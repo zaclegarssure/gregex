@@ -229,10 +229,6 @@ impl PikeVM {
                         thread.free(state);
                         break;
                     }
-                    ConsumeAny => {
-                        state.push_next(thread.inc_pc());
-                        break;
-                    }
                     Fork2(a, b) => {
                         let new_thread = thread.dup(state).with_pc(*b);
                         state.push_active(new_thread);

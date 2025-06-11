@@ -15,7 +15,6 @@ use crate::{regex::Config, util::Char};
 #[derive(Debug, Clone)]
 pub enum Instruction {
     Consume(Char),
-    ConsumeAny,
     ConsumeClass(Box<[(Char, Char)]>),
     /// Consume a class which was outlined during the compilation process
     /// This is done with large classes to reduce memory usage for the interpreter
@@ -237,7 +236,7 @@ impl Compiler {
                 let mut jmps = Vec::with_capacity(length - 1);
                 let current_pc = self.current_pc();
                 // Just to allocate some space
-                self.push(ConsumeAny, barrier);
+                self.push(Jmp(0), barrier);
                 for (i, hir) in hirs.into_iter().enumerate() {
                     fork_targets.push(self.current_pc());
                     let barrier = self.compile_internal(hir, false);

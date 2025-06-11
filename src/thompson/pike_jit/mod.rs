@@ -3,8 +3,6 @@ use std::error::Error;
 use std::fmt::Display;
 use std::{fmt, mem};
 
-use cg_impl_array::CGImplArray;
-use cg_impl_cow_array::CGImplCowArray;
 use cg_impl_register::CGImplReg;
 use cg_impl_tree::CGImplTree;
 use cg_implementation::CGImpl;
@@ -663,7 +661,6 @@ impl PikeJIT {
         }
         match instruction {
             Instruction::Consume(c) => self.compile_consume::<CG>(i, *c),
-            Instruction::ConsumeAny => self.compile_consume_any(i),
             Instruction::ConsumeClass(class) => self.compile_consume_class::<CG>(i, class),
             Instruction::Fork2(a, b) => self.compile_fork::<CG>(&[*a, *b]),
             Instruction::ForkN(items) => self.compile_fork::<CG>(items),
@@ -741,12 +738,6 @@ impl PikeJIT {
         ;; CG::free_curr_thread(self)
         ; jmp =>self.step_next_active
         )
-    }
-
-    fn compile_consume_any(&mut self, i: usize) {
-        let next_label = self.instr_labels[i + 1];
-        self.push_next(next_label);
-        __!(self.ops, jmp =>self.step_next_active)
     }
 
     fn compile_consume_class<CG: CGImpl>(&mut self, i: usize, class: &[(Char, Char)]) {
