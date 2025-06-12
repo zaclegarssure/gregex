@@ -178,4 +178,8 @@ impl CGImpl for CGImplTree {
         ; enough_space:
         )
     }
+
+    fn require_thread_tree() -> bool {
+        false
+    }
 }

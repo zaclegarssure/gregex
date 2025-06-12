@@ -195,4 +195,8 @@ impl CGImpl for CGImplCowArray {
     fn at_fetch_next_char(_: &mut PikeJIT) {
         // Nothing to do
     }
+
+    fn require_thread_tree() -> bool {
+        true
+    }
 }

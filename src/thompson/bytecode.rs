@@ -84,6 +84,9 @@ impl Compiler {
             ..Default::default()
         };
         compiler.compile_internal(hir, false);
+        // Even though the Accept can have multiple parents
+        // we don't need to check if it was visited before, since
+        // only one thread at most can reach it per iteration
         compiler.push(Accept, false);
         Ok(compiler.bytecode)
     }

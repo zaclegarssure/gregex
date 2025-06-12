@@ -1,6 +1,8 @@
 use std::alloc::{self, Layout};
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::Display;
+use std::iter::once;
 use std::{fmt, mem};
 
 use cg_impl_register::CGImplReg;
@@ -314,13 +316,14 @@ impl JittedRegex {
 
 pub struct PikeJIT {
     ops: Assembler,
-    instr_labels: Vec<DynamicLabel>,
+    instr_labels: HashMap<usize, DynamicLabel>,
     outlined_class_labels: Vec<DynamicLabel>,
     register_count: usize,
     step_next_active: DynamicLabel,
     next_iter: DynamicLabel,
     next_iter_with_search: DynamicLabel,
     fetch_next_char: DynamicLabel,
+    max_instr_len: usize,
 }
 
 #[derive(Debug)]
@@ -353,12 +356,7 @@ impl PikeJIT {
         capture_count: usize,
     ) -> Result<JittedRegex, CompileError> {
         let mut ops = Assembler::new().map_err(|_| CompileError::FailedToCreateAssembler)?;
-        let instr_labels = Vec::from_iter(
-            bytecode
-                .instructions
-                .iter()
-                .map(|_| ops.new_dynamic_label()),
-        );
+        let instr_labels = HashMap::new();
         let outlined_class_labels = Vec::from_iter(
             bytecode
                 .outlined_classes
@@ -378,15 +376,270 @@ impl PikeJIT {
             next_iter_with_search,
             fetch_next_char,
             outlined_class_labels,
+            max_instr_len: bytecode.instructions.len(),
         };
+
         for (i, class) in bytecode.outlined_classes.iter().enumerate() {
             compiler.compile_outlined_class(i, class);
         }
-        for (i, instr) in bytecode.instructions.iter().enumerate() {
-            let barrier = bytecode.barriers[i];
-            compiler.compile_instruction::<CG>(i, instr, barrier);
-        }
+
+        compiler.compile_standalone::<CG>(bytecode, 0);
         compiler.assemble::<CG>()
+    }
+
+    fn compile_consume<CG: CGImpl>(
+        &mut self,
+        c: Char,
+        pc: usize,
+        bytecode: &Bytecode,
+        cnt: DynamicLabel,
+    ) -> DynamicLabel {
+        let next_label = self.compile_standalone::<CG>(bytecode, pc + 1);
+
+        let this_label = self.ops.new_dynamic_label();
+        __!(self.ops,
+          =>this_label
+        ; cmp curr_char, ((u32::from(c)).cast_signed())
+        ; jne >fail
+        ;; self.push_next(next_label)
+        );
+        if CG::require_thread_tree() {
+            __!(self.ops,
+              jmp =>cnt
+            ; fail:
+            ;; CG::free_curr_thread(self)
+            ; jmp =>cnt
+            );
+        } else {
+            __!(self.ops,
+              fail:
+            ; jmp =>cnt
+            );
+        }
+        this_label
+    }
+
+    fn compile_consume_class<CG: CGImpl>(
+        &mut self,
+        class: &[(Char, Char)],
+        pc: usize,
+        bytecode: &Bytecode,
+        cnt: DynamicLabel,
+    ) -> DynamicLabel {
+        let after_consume_label = self.compile_standalone::<CG>(bytecode, pc + 1);
+        let fail = if CG::require_thread_tree() {
+            self.ops.new_dynamic_label()
+        } else {
+            cnt
+        };
+        let next = self.ops.new_dynamic_label();
+        let this_label = self.ops.new_dynamic_label();
+        __!(self.ops, =>this_label);
+        for (from, to) in class {
+            __!(self.ops,
+              cmp curr_char, (u32::from(*from)).cast_signed()
+            ; jb =>fail
+            ; cmp curr_char, (u32::from(*to)).cast_signed()
+            ; ja >next
+            ; jmp =>next
+            ; next:
+            )
+        }
+        if CG::require_thread_tree() {
+            __!(self.ops,
+              =>fail
+            ;; CG::free_curr_thread(self)
+            ; jmp =>cnt
+            ; =>next
+            ;; self.push_next(after_consume_label)
+            ; jmp =>cnt
+            )
+        } else {
+            __!(self.ops,
+              jmp =>cnt
+            ; =>next
+            ;; self.push_next(after_consume_label)
+            ; jmp =>cnt
+            )
+        }
+
+        this_label
+    }
+
+    fn compile_consume_outlined<CG: CGImpl>(
+        &mut self,
+        class_id: usize,
+        pc: usize,
+        bytecode: &Bytecode,
+        cnt: DynamicLabel,
+    ) -> DynamicLabel {
+        let after_consume_label = self.compile_standalone::<CG>(bytecode, pc + 1);
+        let class_label = self.outlined_class_labels[class_id];
+        let this_label = self.ops.new_dynamic_label();
+        __!(self.ops,
+          =>this_label
+        ; call =>class_label
+        ; test reg1, reg1
+        ; jnz >fail
+        ;; self.push_next(after_consume_label)
+        ; jmp =>cnt
+        ; fail:
+        ;; CG::free_curr_thread(self)
+        ; jmp =>cnt
+        );
+
+        this_label
+    }
+
+    /// Compile the given bytecode instruction, as a standalone piece of code that can be jumped
+    /// to. Its address is then recorded in `self.instr_labels`.
+    fn compile_standalone<CG: CGImpl>(&mut self, bytecode: &Bytecode, pc: usize) -> DynamicLabel {
+        if let Some(label) = self.instr_labels.get(&pc) {
+            return *label;
+        }
+        let this_label = self.ops.new_dynamic_label();
+        self.instr_labels.insert(pc, this_label);
+        let target_label =
+            self.compile_i::<CG>(bytecode, HashSet::new(), vec![pc], self.step_next_active);
+        // This way we avoid adding unecessary jumps
+        let target_offset = self
+            .ops
+            .labels()
+            .resolve_dynamic(target_label)
+            .expect("The label returned by compile_i should be defined");
+        self.ops
+            .labels_mut()
+            .define_dynamic(this_label, target_offset)
+            .expect("Wat?");
+        this_label
+    }
+
+    fn compile_i_2<CG: CGImpl>(
+        &mut self,
+        bytecode: &Bytecode,
+        pc: usize,
+        visited: HashSet<usize>,
+        mut stack: Vec<usize>,
+        cnt: DynamicLabel,
+    ) -> DynamicLabel {
+        match &bytecode.instructions[pc] {
+            Instruction::Consume(c) => {
+                // TODO: See if it would be worth to compile this after this code
+                let after_label = self.compile_i::<CG>(bytecode, visited, stack, cnt);
+                self.compile_consume::<CG>(*c, pc, bytecode, after_label)
+            }
+            Instruction::ConsumeClass(items) => {
+                let after_label = self.compile_i::<CG>(bytecode, visited, stack, cnt);
+                self.compile_consume_class::<CG>(items, pc, bytecode, after_label)
+            }
+            Instruction::ConsumeOutlined(class_id) => {
+                let after_label = self.compile_i::<CG>(bytecode, visited, stack, cnt);
+                self.compile_consume_outlined::<CG>(*class_id, pc, bytecode, after_label)
+            }
+            Instruction::Fork2(a, b) => {
+                stack.push(*b);
+                stack.push(*a);
+                self.compile_i::<CG>(bytecode, visited, stack, cnt)
+            }
+            Instruction::ForkN(items) => {
+                for pc in items.iter().rev() {
+                    stack.push(*pc);
+                }
+                self.compile_i::<CG>(bytecode, visited, stack, cnt)
+            }
+            Instruction::Jmp(pc) => {
+                stack.push(*pc);
+                self.compile_i::<CG>(bytecode, visited, stack, cnt)
+            }
+            Instruction::WriteReg(reg) => {
+                // TODO: This is kinda ass
+                let after_label = self.compile_i::<CG>(bytecode, visited.clone(), stack, cnt);
+                let this_label = self.ops.new_dynamic_label();
+                if after_label == self.step_next_active {
+                    let body_label =
+                        self.compile_i::<CG>(bytecode, visited, vec![pc + 1], after_label);
+
+                    __!(self.ops,
+                      =>this_label
+                    ;; CG::write_reg(self, *reg)
+                    ; jmp =>body_label
+                    );
+                } else {
+                    let undo_write_label = self.ops.new_dynamic_label();
+                    let body_label =
+                        self.compile_i::<CG>(bytecode, visited, vec![pc + 1], undo_write_label);
+                    __!(self.ops,
+                      =>this_label
+                    ; push curr_thd_data
+                    ;; CG::write_reg(self, *reg)
+                    ; jmp =>body_label
+                    ; =>undo_write_label
+                    ; pop curr_thd_data
+                    ; jmp =>after_label
+                    );
+                }
+                this_label
+            }
+            Instruction::Assertion(look) => {
+                let after_label = self.compile_i::<CG>(bytecode, visited.clone(), stack, cnt);
+                let on_success =
+                    self.compile_i::<CG>(bytecode, visited.clone(), vec![pc + 1], after_label);
+                self.compile_assertion::<CG>(*look, on_success, after_label)
+            }
+            Instruction::Accept => {
+                let this_label = self.ops.new_dynamic_label();
+                __!(self.ops, =>this_label);
+                self.compile_accept::<CG>();
+                this_label
+            }
+        }
+    }
+
+    fn compile_i<CG: CGImpl>(
+        &mut self,
+        bytecode: &Bytecode,
+        mut visited: HashSet<usize>,
+        mut stack: Vec<usize>,
+        cnt: DynamicLabel,
+    ) -> DynamicLabel {
+        match stack.pop() {
+            None => cnt,
+            Some(pc) => {
+                // To avoid inifite loop when compiling nullable-loops
+                if !visited.insert(pc) {
+                    return self.compile_i::<CG>(bytecode, visited, stack, cnt);
+                }
+
+                if bytecode.barriers[pc] {
+                    let after_label = self.compile_i::<CG>(bytecode, visited.clone(), stack, cnt);
+                    let body_label =
+                        self.compile_i_2::<CG>(bytecode, pc, visited, vec![], after_label);
+                    let this_label = self.ops.new_dynamic_label();
+                    __!(self.ops,
+                      =>this_label
+                    // Since x64 does not support 64bit immediate in comparisons
+                    // we must first load it in a register and then compare
+                    // the two registers themself
+                    ; mov reg2, QWORD pc as _
+                    ; mov reg1, [mem + reg2 * 8]
+                    ; cmp reg1, input_pos
+                    // The idea is that when writing in visited, we write input_pos + 1
+                    // That way 0 (which is what the memory is initialized to) can always
+                    // be crossed.
+                    ; jbe >success
+                    ;; CG::free_curr_thread(self)
+                    ; jmp =>after_label
+                    ; success:
+                    ; lea reg1, [input_pos + 1]
+                    ; mov [mem + reg2 * 8], reg1
+                    ; jmp =>body_label
+                    );
+                    this_label
+                } else {
+                    self.compile_i_2::<CG>(bytecode, pc, visited, stack, cnt)
+                }
+            }
+        }
     }
 
     fn set_and_align_sp(&mut self, value: i32) {
@@ -400,7 +653,7 @@ impl PikeJIT {
     }
 
     fn assemble<CG: CGImpl>(mut self) -> Result<JittedRegex, CompileError> {
-        let label0 = self.instr_labels[0];
+        let label0 = self.instr_labels[&0];
         let start;
         let start_anchored;
         __!(self.ops,
@@ -537,7 +790,7 @@ impl PikeJIT {
     /// measured in multiples of 8bytes.
     /// However offsets are in bytes, since those are directly used in mov instructions
     fn visited_set_size(&self) -> usize {
-        self.instr_labels.len()
+        self.max_instr_len
     }
 
     /// Starting offset of the queues region (in *bytes*)
@@ -546,7 +799,7 @@ impl PikeJIT {
     }
 
     fn queue_size(&self) -> usize {
-        (self.instr_labels.len() * 2 + 1) * Self::THREAD_SIZE as usize
+        (self.max_instr_len * 2 + 1) * Self::THREAD_SIZE as usize
     }
 
     fn total_queue_size(&self) -> usize {
@@ -563,7 +816,7 @@ impl PikeJIT {
 
     fn max_concurrent_threads(&self) -> usize {
         // This is an upperbound, it is a bit less in practice
-        3 * self.instr_labels.len()
+        3 * self.max_instr_len
     }
 
     #[allow(clippy::fn_to_numeric_cast)]
@@ -616,27 +869,6 @@ impl PikeJIT {
         )
     }
 
-    fn check_has_visited<CG: CGImpl>(&mut self, instr_index: usize) {
-        // This limit the size of the input string,
-        // The better way would be to load with an immediate
-        // offset if instr_index fits in 31 bits, otherwise
-        // load it in a base register with a scaling factor
-        let byte_offset = ((instr_index * 8) as u32).cast_signed();
-        __!(self.ops,
-          mov reg1, [mem + byte_offset]
-        ; cmp reg1, input_pos
-        // The idea is that when writing in visited, we write input_pos + 1
-        // That way 0 (which is what the memory is initialized to) can always
-        // be crossed.
-        ; jbe >success
-        ;; CG::free_curr_thread(self)
-        ; jmp =>self.step_next_active
-        ; success:
-        ; lea reg1, [input_pos + 1]
-        ; mov [mem + byte_offset], reg1
-        )
-    }
-
     fn epilogue(&mut self) {
         __!(self.ops,
           mov rbx, [rbp + saved_rbx_offset!()]
@@ -647,151 +879,6 @@ impl PikeJIT {
         ; mov rsp, rbp
         ; pop rbp
         )
-    }
-
-    fn compile_instruction<CG: CGImpl>(
-        &mut self,
-        i: usize,
-        instruction: &Instruction,
-        barrier: bool,
-    ) {
-        self.bind_label(i);
-        if barrier {
-            self.check_has_visited::<CG>(i);
-        }
-        match instruction {
-            Instruction::Consume(c) => self.compile_consume::<CG>(i, *c),
-            Instruction::ConsumeClass(class) => self.compile_consume_class::<CG>(i, class),
-            Instruction::Fork2(a, b) => self.compile_fork::<CG>(&[*a, *b]),
-            Instruction::ForkN(items) => self.compile_fork::<CG>(items),
-            Instruction::Jmp(target) => self.compile_jump(*target),
-            Instruction::WriteReg(reg) => self.compile_write_reg::<CG>(i, *reg),
-            Instruction::Accept => self.compile_accept::<CG>(),
-            Instruction::ConsumeOutlined(class_id) => {
-                self.compile_consume_outlined::<CG>(i, *class_id)
-            }
-            Instruction::Assertion(look) => self.compile_assertion::<CG>(i, *look),
-        }
-    }
-
-    fn compile_consume_outlined<CG: CGImpl>(&mut self, i: usize, class_id: usize) {
-        let class_label = self.outlined_class_labels[class_id];
-        __!(self.ops,
-          call =>class_label
-        ; test reg1, reg1
-        ; jnz >fail
-        ;; self.push_next(self.instr_labels[i+1])
-        ; jmp =>self.step_next_active
-        ; fail:
-        ;; CG::free_curr_thread(self)
-        ; jmp =>self.step_next_active
-        )
-    }
-
-    fn compile_outlined_class(&mut self, i: usize, class: &[(Char, Char)]) {
-        let label = self.outlined_class_labels[i];
-
-        __!(self.ops, =>label
-        // I don't have any actual evidence for that "fast path", it just seems
-        // slow that for very large classes, if we are at the end of the input
-        // we compare this sentinel value agains every interval even though we
-        // know it will never match.
-        ; cmp curr_char, Char::INPUT_BOUND.into()
-        ; jne >next
-        ; mov reg1, 1
-        ; ret
-        ; next:
-        );
-        for (from, to) in class {
-            __!(self.ops,
-                cmp curr_char, (u32::from(*from)).cast_signed()
-            ; jb >fail
-            ; cmp curr_char, (u32::from(*to)).cast_signed()
-            ; ja >next
-            ; mov reg1, 0
-            ; ret
-            ; fail:
-            ; mov reg1, 1
-            ; ret
-            ; next:
-            )
-        }
-        __!(self.ops,
-          mov reg1, 1
-        ; ret
-        )
-    }
-
-    fn bind_label(&mut self, i: usize) {
-        let label = self.instr_labels[i];
-        __!(self.ops, =>label)
-    }
-
-    fn compile_consume<CG: CGImpl>(&mut self, i: usize, c: Char) {
-        let next_label = self.instr_labels[i + 1];
-        __!(self.ops,
-          cmp curr_char, ((u32::from(c)).cast_signed())
-        ; jne >fail
-        ;; self.push_next(next_label)
-        ; jmp =>self.step_next_active
-        ; fail:
-        ;; CG::free_curr_thread(self)
-        ; jmp =>self.step_next_active
-        )
-    }
-
-    fn compile_consume_class<CG: CGImpl>(&mut self, i: usize, class: &[(Char, Char)]) {
-        let fail = self.ops.new_dynamic_label();
-        let next = self.ops.new_dynamic_label();
-        for (from, to) in class {
-            self.compile_consume_range(next, fail, *from, *to);
-        }
-        __!(self.ops,
-          =>fail
-        ;; CG::free_curr_thread(self)
-        ; jmp =>self.step_next_active
-        ; =>next
-        ;; self.push_next(self.instr_labels[i+1])
-        ; jmp =>self.step_next_active
-        )
-    }
-
-    fn compile_consume_range(
-        &mut self,
-        next_label: DynamicLabel,
-        fail_label: DynamicLabel,
-        from: Char,
-        to: Char,
-    ) {
-        __!(self.ops,
-          cmp curr_char, (u32::from(from)).cast_signed()
-        ; jb =>fail_label
-        ; cmp curr_char, (u32::from(to)).cast_signed()
-        ; ja >next
-        ; jmp =>next_label
-        ; next:
-        )
-    }
-
-    fn compile_fork<CG: CGImpl>(&mut self, branches: &[usize]) {
-        let len = branches.len();
-        for i in (1..len).rev() {
-            let instr_i = branches[i];
-            self.push_active(self.instr_labels[instr_i]);
-            CG::clone_curr_thread(self);
-        }
-        __!(self.ops, jmp => self.instr_labels[branches[0]])
-    }
-
-    fn compile_jump(&mut self, target: usize) {
-        let label = self.instr_labels[target];
-        __!(self.ops, jmp => label)
-    }
-
-    fn compile_write_reg<CG: CGImpl>(&mut self, i: usize, reg: u32) {
-        CG::write_reg(self, reg);
-        let next_label = self.instr_labels[i + 1];
-        __!(self.ops, jmp =>next_label)
     }
 
     fn compile_accept<CG: CGImpl>(&mut self) {
@@ -872,74 +959,117 @@ impl PikeJIT {
         )
     }
 
-    fn compile_assertion<CG: CGImpl>(&mut self, i: usize, look: Look) {
+    fn compile_outlined_class(&mut self, i: usize, class: &[(Char, Char)]) {
+        let label = self.outlined_class_labels[i];
+
+        __!(self.ops, =>label
+        // I don't have any actual evidence for that "fast path", it just seems
+        // slow that for very large classes, if we are at the end of the input
+        // we compare this sentinel value agains every interval even though we
+        // know it will never match.
+        ; cmp curr_char, Char::INPUT_BOUND.into()
+        ; jne >next
+        ; mov reg1, 1
+        ; ret
+        ; next:
+        );
+        for (from, to) in class {
+            __!(self.ops,
+                cmp curr_char, (u32::from(*from)).cast_signed()
+            ; jb >fail
+            ; cmp curr_char, (u32::from(*to)).cast_signed()
+            ; ja >next
+            ; mov reg1, 0
+            ; ret
+            ; fail:
+            ; mov reg1, 1
+            ; ret
+            ; next:
+            )
+        }
+        __!(self.ops,
+          mov reg1, 1
+        ; ret
+        )
+    }
+
+    fn compile_assertion<CG: CGImpl>(
+        &mut self,
+        look: Look,
+        on_success: DynamicLabel,
+        cnt: DynamicLabel,
+    ) -> DynamicLabel {
+        let this_label = self.ops.new_dynamic_label();
+        __!(self.ops, =>this_label);
         match look {
             Look::Start => {
                 __!(self.ops,
                   cmp prev_char,  Char::INPUT_BOUND.into()
-                ; je =>self.instr_labels[i+1]
+                ; je =>on_success
                 ;; CG::free_curr_thread(self)
-                ; jmp =>self.step_next_active
+                ; jmp =>cnt
                 )
             }
             Look::End => {
                 __!(self.ops,
                   cmp curr_char, Char::INPUT_BOUND.into()
-                ; je =>self.instr_labels[i+1]
+                ; je =>on_success
                 ;; CG::free_curr_thread(self)
-                ; jmp =>self.step_next_active
+                ; jmp =>cnt
                 )
             }
             Look::StartLF => {
                 __!(self.ops,
                   cmp prev_char,  Char::INPUT_BOUND.into()
-                ; je =>self.instr_labels[i+1]
+                ; je =>on_success
                 ; cmp prev_char,  ('\n' as u32).cast_signed()
-                ; je =>self.instr_labels[i+1]
+                ; je =>on_success
                 ;; CG::free_curr_thread(self)
-                ; jmp =>self.step_next_active
+                ; jmp =>cnt
                 )
             }
             Look::EndLF => {
                 __!(self.ops,
                   cmp curr_char,  Char::INPUT_BOUND.into()
-                ; je =>self.instr_labels[i+1]
+                ; je =>on_success
                 ; cmp curr_char,  ('\n' as u32).cast_signed()
-                ; je =>self.instr_labels[i+1]
+                ; je =>on_success
                 ;; CG::free_curr_thread(self)
-                ; jmp =>self.step_next_active
+                ; jmp =>cnt
                 )
             }
             Look::StartCRLF => {
                 __!(self.ops,
                   cmp prev_char,  Char::INPUT_BOUND.into()
-                ; je =>self.instr_labels[i+1]
+                ; je =>on_success
                 ; cmp prev_char,  ('\n' as u32).cast_signed()
-                ; je =>self.instr_labels[i+1]
+                ; je =>on_success
                 ; cmp prev_char,  ('\r' as u32).cast_signed()
                 ; jne >fail
                 ; cmp curr_char,  ('\n' as u32).cast_signed()
-                ; jne =>self.instr_labels[i+1]
+                ; jne =>on_success
                 ; fail:
                 ;; CG::free_curr_thread(self)
-                ; jmp =>self.step_next_active
+                ; jmp =>cnt
                 )
             }
             Look::EndCRLF => {
                 __!(self.ops,
                   cmp curr_char,  Char::INPUT_BOUND.into()
-                ; je =>self.instr_labels[i+1]
+                ; je =>on_success
                 ; cmp curr_char,  ('\r' as u32).cast_signed()
-                ; je =>self.instr_labels[i+1]
+                ; je =>on_success
                 ; cmp curr_char,  ('\n' as u32).cast_signed()
                 ; jne >fail
                 ; cmp prev_char,  ('\r' as u32).cast_signed()
-                ; jne =>self.instr_labels[i+1]
+                ; jne =>on_success
                 ; fail:
                 ;; CG::free_curr_thread(self)
-                ; jmp =>self.step_next_active)
+                ; jmp =>cnt
+                )
             }
             _ => todo!(),
         }
+        this_label
     }
 }

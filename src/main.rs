@@ -41,6 +41,9 @@ fn main() {
             match jitted.find_captures(input) {
                 Some(m) => {
                     println!("Matched: {}", m.group0().as_str());
+                    for i in 0..m.group_len() {
+                        println!("Group{i}: {:?}", m.get(i).map(|m| m.as_str()));
+                    }
                 }
                 None => println!("No match."),
             }
