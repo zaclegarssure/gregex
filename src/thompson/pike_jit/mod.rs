@@ -3,6 +3,8 @@ use std::error::Error;
 use std::fmt::Display;
 use std::{fmt, mem};
 
+use cg_impl_array::CGImplArray;
+use cg_impl_cow_array::CGImplCowArray;
 use cg_impl_register::CGImplReg;
 use cg_impl_tree::CGImplTree;
 use cg_implementation::CGImpl;
@@ -222,7 +224,7 @@ impl RegexImpl for JittedRegex {
 }
 
 impl JittedRegex {
-    pub fn new(
+    fn new_internal<CG: CGImpl>(
         pattern: &str,
         config: Config,
     ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
@@ -236,9 +238,30 @@ impl JittedRegex {
         let s = if capture_count == 1 {
             PikeJIT::compile::<CGImplReg>(&bytecode, capture_count)?
         } else {
-            PikeJIT::compile::<CGImplTree>(&bytecode, capture_count)?
+            PikeJIT::compile::<CG>(&bytecode, capture_count)?
         };
         Ok(s)
+    }
+
+    pub fn new(
+        pattern: &str,
+        config: Config,
+    ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
+        Self::new_internal::<CGImplTree>(pattern, config)
+    }
+
+    pub fn new_array(
+        pattern: &str,
+        config: Config,
+    ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
+        Self::new_internal::<CGImplArray>(pattern, config)
+    }
+
+    pub fn new_cow(
+        pattern: &str,
+        config: Config,
+    ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
+        Self::new_internal::<CGImplCowArray>(pattern, config)
     }
 
     fn exec_internal<'s>(&self, input: &Input<'s>, state: &mut State, result: &mut [Span]) -> bool {

@@ -205,6 +205,24 @@ impl<'s> Builder<'s> {
             capture_count,
         })
     }
+
+    pub fn pike_jit_array(self) -> Result<Regex, CompileError> {
+        let pike_jit = JittedRegex::new_array(self.pattern, self.config)?;
+        let capture_count = pike_jit.capture_count();
+        Ok(Regex {
+            engine: RegexEngine::JittedRegex(pike_jit),
+            capture_count,
+        })
+    }
+
+    pub fn pike_jit_cow_array(self) -> Result<Regex, CompileError> {
+        let pike_jit = JittedRegex::new_cow(self.pattern, self.config)?;
+        let capture_count = pike_jit.capture_count();
+        Ok(Regex {
+            engine: RegexEngine::JittedRegex(pike_jit),
+            capture_count,
+        })
+    }
 }
 
 /// Iterator over all match in a regex.
