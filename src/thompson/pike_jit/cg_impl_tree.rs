@@ -15,25 +15,31 @@ struct Node {
     reg: usize,
 }
 
-// The result is just a pointer to the last cg-operation (close cg0)
+// The result is just a pointer to the last cg-operation and the close cg0
 // of the winning thread. Or 0 if no thread won.
 cst!(
     current_match_offset,
-    last_saved_value_offset!() - ptr_size!()
+    last_saved_value_offset!() - 2 * ptr_size!()
 );
 
 extern "sysv64" fn write_results(
     spans: *mut Span,
     reg_count: usize,
-    mut tree: *const Node,
+    mut offset: usize,
     mem: *const u64,
+    cg0_to: usize,
 ) {
     unsafe {
         // Reset span array
-        for i in 0..(reg_count / 2) {
+        // CG0 is always set
+        for i in 1..(reg_count / 2) {
             (*spans.add(i)) = Span::invalid();
         }
         loop {
+            if (offset as isize) <= 0 {
+                break;
+            }
+            let tree = std::mem::transmute::<*const u64, *const Node>(mem.add(offset / 8));
             let reg = (*tree).reg;
             let pos = (*tree).pos;
             let span_idx = reg / 2;
@@ -47,15 +53,12 @@ extern "sysv64" fn write_results(
                     }
                 }
             }
-            let offset = (*tree).prev;
-            if (offset as isize) <= 0 {
-                break;
-            }
-            tree = std::mem::transmute::<*const u64, *const Node>(mem.add(offset / 8));
+            offset = (*tree).prev;
         }
         // Last group is always cg 0
-        let pos = (-((*tree).prev as isize)) as usize;
+        let pos = (-(offset as isize)) as usize;
         (*spans).from = pos;
+        (*spans).to = cg0_to;
     }
 }
 
@@ -68,6 +71,8 @@ impl CGImpl for CGImplTree {
              sub curr_thd_data, input_pos
             );
             return;
+        } else if reg == 1 {
+            unreachable!()
         }
         __!(jit.ops,
           mov [mem + cg_reg], curr_thd_data
@@ -79,8 +84,10 @@ impl CGImpl for CGImplTree {
     }
 
     fn accept_curr_thread(jit: &mut PikeJIT) {
-        Self::write_reg(jit, 1);
-        __!(jit.ops, mov[rbp + current_match_offset!()], curr_thd_data);
+        __!(jit.ops,
+        // Record the closing group directly in the result (like with cg-reg)
+          mov [rbp + current_match_offset!() + ptr_size!()], input_pos
+        ; mov[rbp + current_match_offset!()], curr_thd_data);
     }
 
     #[allow(clippy::fn_to_numeric_cast)]
@@ -88,11 +95,12 @@ impl CGImpl for CGImplTree {
         __!(jit.ops,
           mov rdx, [rbp + current_match_offset!()]
         ; test rdx, rdx
-        ; jz >no_match
+        // We use -1 to indicate a no match
+        ; js >no_match
         ; mov rdi, [rbp + result_offset!()]
         ; mov rsi, [rbp + result_len_offset!()]
-        ; add rdx, mem
         ; mov rcx, mem
+        ; mov r8, [rbp + current_match_offset!() + ptr_size!()]
         ; mov rax, QWORD write_results as _
         // TODO: Check the alignment but normally it should be good
         ; call rax
@@ -115,9 +123,9 @@ impl CGImpl for CGImplTree {
     fn initialize_cg_region(jit: &mut PikeJIT) {
         __!(jit.ops,
           mov cg_reg, QWORD jit.cg_mem_start() as _
-        // Since 0 is not a valid offset, we use it as
+        // Since -1 is not a valid offset, we use it as
         // a sentinel value to indicate a no-match
-        ; mov QWORD [rbp + current_match_offset!()], 0
+        ; mov QWORD [rbp + current_match_offset!()], -1
         ;; jit.set_and_align_sp(current_match_offset!())
         )
     }
