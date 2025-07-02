@@ -61,6 +61,7 @@ pub struct Bytecode {
     pub instructions: Vec<Instruction>,
     pub barriers: Vec<bool>,
     pub outlined_classes: Vec<Box<[(Char, Char)]>>,
+    pub write_reg_count: usize,
 }
 
 /// A compiler from [`regex_syntax::hir::Hir`] to
@@ -215,6 +216,7 @@ impl Compiler {
                     self.push(WriteReg(index * 2), barrier);
                     let barrier = self.compile_internal(*sub, false);
                     self.push(WriteReg(index * 2 + 1), barrier);
+                    self.bytecode.write_reg_count += 2;
                     false
                 } else {
                     self.compile_internal(*sub, barrier)

@@ -121,7 +121,7 @@ impl CGImpl for CGImplTree {
     fn init_mem_size(jit: &PikeJIT) -> usize {
         // TODO: Figure out some goods bounds
         // TODO: Make it depends on the number of write_cg ops
-        jit.max_concurrent_threads() * (size_of::<Node>() / size_of::<usize>()) * 4
+        jit.write_reg_count * (size_of::<Node>() / size_of::<usize>()) * 4
     }
 
     fn initialize_cg_region(jit: &mut PikeJIT) {
@@ -144,10 +144,9 @@ impl CGImpl for CGImplTree {
     fn at_code_end(_jit: &mut PikeJIT) {}
 
     fn at_fetch_next_char(jit: &mut PikeJIT) {
-        // In practise we don't need that much space
-        // TODO size
-        let requested_space = (jit.max_concurrent_threads() * size_of::<Node>()) as i32;
+        let requested_space = (jit.write_reg_count * size_of::<Node>()) as i32;
         __!(jit.ops,
+        // This incurr a load from the stack at every iter which would be great to not have
           mov reg1, [rbp + state_ptr_offset!()]
         ; mov reg2, [reg1 + ptr_size!()]
         // We want the size in byte, not in word, hence the shift
@@ -162,7 +161,6 @@ impl CGImpl for CGImplTree {
         ; push rsi
         ; push rdi
         ; push r11
-        ; push r8
         ; push r9
         ; push r10
         ; mov rdi, reg1
@@ -173,7 +171,6 @@ impl CGImpl for CGImplTree {
         // Pop saved registers
         ; pop r10
         ; pop r9
-        ; pop r8
         ; pop r11
         ; pop rdi
         ; pop rsi

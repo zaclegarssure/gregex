@@ -351,6 +351,7 @@ pub struct PikeJIT {
     next_iter: DynamicLabel,
     next_iter_with_search: DynamicLabel,
     fetch_next_char: DynamicLabel,
+    write_reg_count: usize,
 }
 
 #[derive(Debug)]
@@ -408,6 +409,7 @@ impl PikeJIT {
             next_iter_with_search,
             fetch_next_char,
             outlined_class_labels,
+            write_reg_count: bytecode.write_reg_count,
         };
         for (i, class) in bytecode.outlined_classes.iter().enumerate() {
             compiler.compile_outlined_class(i, class);

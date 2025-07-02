@@ -17,7 +17,7 @@ fn main() {
             break;
         }
 
-        let jitted = match gregex::Builder::new(pattern).pike_jit_array() {
+        let jitted = match gregex::Builder::new(pattern).pike_jit() {
             Ok(regex) => regex,
             Err(e) => {
                 print!("Error: {}", e);
