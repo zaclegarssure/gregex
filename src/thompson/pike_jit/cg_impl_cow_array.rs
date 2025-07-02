@@ -176,7 +176,6 @@ impl CGImpl for CGImplCowArray {
         ; add reg2, ((Self::array_size(jit) * ptr_size!()) as u32).cast_signed()
         ; mov [cg_reg], reg2
         ; array_copy:
-        // TODO: using rep movs did not seem to improve performance
         ;; {
         for i in 0..jit.register_count {
             let offset = (i * ptr_size!()) as i32;

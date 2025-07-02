@@ -27,21 +27,21 @@ macro_rules! __ {
         dynasm!($ops
         ; .arch x64
         ; .alias retval, rax
-        ; .alias curr_thd_data, rax
+        ; .alias curr_thd_data, rsi
         ; .alias span_end, rbx
         ; .alias mem, r8
-        ; .alias curr_char, ecx
+        ; .alias curr_char, r14d
         ; .alias input_pos, rdx
-        ; .alias input, rdi
-        ; .alias input_len, rsi
+        ; .alias input, r13
+        ; .alias input_len, rax
         ; .alias next_tail, r9
         ; .alias curr_top, r10
         ; .alias cg_reg, r11
         ; .alias prev_char, r12d
-        ; .alias reg1, r13
-        ; .alias reg1d, r13d
-        ; .alias reg2, r14
-        ; .alias reg2d, r14d
+        ; .alias reg1, rdi
+        ; .alias reg1d, edi
+        ; .alias reg2, rcx
+        ; .alias reg2d, ecx
         ; .alias input_inc, r15
         ; $($t)*
         )
@@ -252,7 +252,16 @@ impl JittedRegex {
         pattern: &str,
         config: Config,
     ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
-        Self::new_internal::<CGImplArray>(pattern, config)
+        let hir = Parser::from(config.clone()).parse(pattern)?;
+        let capture_count = if config.cg {
+            hir.properties().explicit_captures_len() + 1
+        } else {
+            1
+        };
+        let bytecode = Compiler::compile(hir, config)?;
+        // Force array for benchmark purposes
+        let s = PikeJIT::compile::<CGImplArray>(&bytecode, capture_count)?;
+        Ok(s)
     }
 
     pub fn new_cow(
@@ -622,6 +631,8 @@ impl PikeJIT {
         // Initialize mem, input_pos, input_end, state_ptr and prev_char
         ; mov [rbp + state_ptr_offset!()], r8
         // State is { mem: *mut u64, size: usize }, and is repr(c)
+        ; mov input, rdi
+        ; mov input_len, rsi
         ; mov mem, [r8]
         ; mov input_pos, r9
         ; mov span_end, [rbp + span_end_offset!()]
