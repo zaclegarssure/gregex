@@ -91,7 +91,7 @@ impl CGImpl for CGImplArray {
 
     fn initialize_cg_region(jit: &mut PikeJIT) {
         let free_list_start = jit.cg_mem_start();
-        let array_start = (free_list_start + Self::free_list_size(jit)) as u32;
+        let array_start = (free_list_start + (Self::free_list_size(jit) * ptr_size!())) as u32;
         __!(jit.ops,
           mov QWORD [rbp + current_match_offset!()], 0
         ; lea rsp, [rbp + current_match_offset!()]

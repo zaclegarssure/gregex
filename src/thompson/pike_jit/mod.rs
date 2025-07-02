@@ -513,16 +513,16 @@ impl PikeJIT {
     fn pop_active(&mut self) {
         __!(self.ops,
           sub curr_top, Self::THREAD_SIZE_BYTE
-        ; mov curr_thd_data, QWORD [curr_top]
-        ; mov reg1, QWORD [curr_top + 8]
+        ; mov curr_thd_data, QWORD [mem + curr_top]
+        ; mov reg1, QWORD [mem + curr_top + 8]
         )
     }
 
     fn push_active(&mut self, label: DynamicLabel) {
         __!(self.ops,
-          mov QWORD [curr_top], curr_thd_data
+          mov QWORD [mem + curr_top], curr_thd_data
         ; lea reg1, [=>label]
-        ; mov QWORD [curr_top + 8], reg1
+        ; mov QWORD [mem + curr_top + 8], reg1
         ; add curr_top, Self::THREAD_SIZE_BYTE
         )
     }
@@ -544,9 +544,9 @@ impl PikeJIT {
     fn push_next(&mut self, label: DynamicLabel) {
         __!(self.ops,
           sub next_tail, Self::THREAD_SIZE_BYTE
-        ; mov QWORD [next_tail], curr_thd_data
+        ; mov QWORD [mem + next_tail], curr_thd_data
         ; lea reg1, [=>label]
-        ; mov QWORD [next_tail + 8], reg1
+        ; mov QWORD [mem + next_tail + 8], reg1
         )
     }
 
@@ -624,17 +624,10 @@ impl PikeJIT {
         // library. Therefore we do it manually.
         ; sub rsp, (4*ptr_size!())
         // Initialize curr_top, next_tail and saved them on the stack for easier
-        // swapping. Okay movabs is broken
-        // TODO FIX THIS
-        ; mov rax, QWORD ((self.queue_start() + ((self.queue_size() * ptr_size!())/2)) as i64)
-        ; add rax, mem
-        ; mov QWORD [rbp + (curr_top_init_offset!())], rax
-        ; mov curr_top, rax
-        ; mov rax, ((self.queue_start() + ((3*ptr_size!()*self.queue_size())/2)) as i32)
-        // TODO: I think we need to decrement this to let a space for the sentinel
-        ; add rax, mem
-        ; mov QWORD [rbp + (next_tail_init_offset!())], rax
-        ; mov next_tail, rax
+        ; mov curr_top, QWORD ((self.queue_start() + ((self.queue_size() * ptr_size!())/2)) as i64)
+        ; mov QWORD [rbp + (curr_top_init_offset!())], curr_top
+        ; mov next_tail, QWORD ((self.queue_start() + ((3*ptr_size!()*self.queue_size())/2)) as i64)
+        ; mov QWORD [rbp + (next_tail_init_offset!())], next_tail
         ;; CG::initialize_cg_region(self)
         )
     }

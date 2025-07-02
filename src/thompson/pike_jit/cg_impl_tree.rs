@@ -165,18 +165,12 @@ impl CGImpl for CGImplTree {
         ; mov rdi, reg1
         // TODO: Again, make sure rsp is 16byte aligned, but nomrally it should
         ;; jit.grow_memory()
-        // Retarget pointers
+        // Reload mem
+        ; mov mem, [rax]
+        // Pop saved registers
         ; pop r10
         ; pop r9
         ; pop r8
-        ; sub mem, [rax]
-        ; sub next_tail, mem
-        ; sub curr_top, mem
-        ; sub [rbp + next_tail_init_offset!()], mem
-        ; sub [rbp + curr_top_init_offset!()], mem
-        ; mov mem, [rax]
-        ; mov [rbp + state_ptr_offset!()], rax
-        // Pop saved registers
         ; pop r11
         ; pop rdi
         ; pop rsi

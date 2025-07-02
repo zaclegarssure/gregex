@@ -1,4 +1,4 @@
-use gregex::Regex;
+use gregex::{Builder, Regex};
 use regex as rust_regex;
 
 /// Compile a given pattern on all gregex engines. Return Some if it compiles
@@ -20,6 +20,19 @@ pub fn compile_all(pattern: &str) -> Option<Vec<Regex>> {
         Err(_) if must_fail => (),
         _ => panic!("Inconsistency detected"),
     }
+
+    match Builder::new(pattern).pike_jit_array() {
+        Ok(re) if !must_fail => engines.push(re),
+        Err(_) if must_fail => (),
+        _ => panic!("Inconsistency detected"),
+    }
+
+    match Builder::new(pattern).pike_jit_cow_array() {
+        Ok(re) if !must_fail => engines.push(re),
+        Err(_) if must_fail => (),
+        _ => panic!("Inconsistency detected"),
+    }
+
     if must_fail { None } else { Some(engines) }
 }
 
