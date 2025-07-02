@@ -17,9 +17,10 @@ struct Node {
 
 // The result is just a pointer to the last cg-operation and the close cg0
 // of the winning thread. Or 0 if no thread won.
+// The last value is just a boolean to say if we have a result or not
 cst!(
     current_match_offset,
-    last_saved_value_offset!() - 2 * ptr_size!()
+    last_saved_value_offset!() - 3 * ptr_size!()
 );
 
 extern "sysv64" fn write_results(
@@ -87,16 +88,19 @@ impl CGImpl for CGImplTree {
         __!(jit.ops,
         // Record the closing group directly in the result (like with cg-reg)
           mov [rbp + current_match_offset!() + ptr_size!()], input_pos
-        ; mov[rbp + current_match_offset!()], curr_thd_data);
+        // Set to 1 to indicate there is a match
+        ; mov QWORD [rbp + current_match_offset!() + 2*ptr_size!()], 1
+        ; mov [rbp + current_match_offset!()], curr_thd_data
+        )
     }
 
     #[allow(clippy::fn_to_numeric_cast)]
     fn return_result(jit: &mut PikeJIT) {
         __!(jit.ops,
-          mov rdx, [rbp + current_match_offset!()]
+          mov rdx, [rbp + current_match_offset!() + 2*ptr_size!()]
         ; test rdx, rdx
-        // We use -1 to indicate a no match
-        ; js >no_match
+        ; jz >no_match
+        ; mov rdx, [rbp + current_match_offset!()]
         ; mov rdi, [rbp + result_offset!()]
         ; mov rsi, [rbp + result_len_offset!()]
         ; mov rcx, mem
@@ -123,9 +127,8 @@ impl CGImpl for CGImplTree {
     fn initialize_cg_region(jit: &mut PikeJIT) {
         __!(jit.ops,
           mov cg_reg, QWORD jit.cg_mem_start() as _
-        // Since -1 is not a valid offset, we use it as
-        // a sentinel value to indicate a no-match
-        ; mov QWORD [rbp + current_match_offset!()], -1
+        // Mark that no match were found yet
+        ; mov QWORD [rbp + current_match_offset!() + 2*ptr_size!()], 0
         ;; jit.set_and_align_sp(current_match_offset!())
         )
     }

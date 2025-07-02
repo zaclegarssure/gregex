@@ -41,6 +41,7 @@ fn test_many() {
         (r".*[^A-Z]|[A-Z]", "AAAAAAAAAAAAAAAAAAAA"),
         (r".*[^A-Z]|[A-Z]", "AAAAB"),
         (r".*[^A-Z]|[A-Z]", "AABAB"),
+        (r"(?:# [Nn][Oo][Qq][Aa])(?::\s?(([A-Z]+[0-9]+(?:[,\s]+)?)+))?", " # noqa"),
         (
             r"(\s*)((?:# [Nn][Oo][Qq][Aa])(?::\s?(([A-Z]+[0-9]+(?:[,\s]+)?)+))?)",
             "                     # noqua:A123A                                                                                       # noqa
