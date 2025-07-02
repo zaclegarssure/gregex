@@ -74,9 +74,7 @@ cst!(saved_r12_offset, saved_rbx_offset!() - ptr_size!());
 cst!(saved_r13_offset, saved_r12_offset!() - ptr_size!());
 cst!(saved_r14_offset, saved_r13_offset!() - ptr_size!());
 cst!(saved_r15_offset, saved_r14_offset!() - ptr_size!());
-cst!(next_tail_init_offset, saved_r15_offset!() - ptr_size!());
-cst!(curr_top_init_offset, next_tail_init_offset!() - ptr_size!());
-cst!(state_ptr_offset, curr_top_init_offset!() - ptr_size!());
+cst!(state_ptr_offset, saved_r15_offset!() - ptr_size!());
 cst!(last_saved_value_offset, state_ptr_offset!());
 
 pub mod cg_impl_array;
@@ -467,13 +465,18 @@ impl PikeJIT {
          ; cmp input_pos, span_end
          ; je >return_result
          ; add input_pos, input_inc
-         ; mov curr_top, [rbp + (next_tail_init_offset!())]
          ;; CG::alloc_thread(&mut self)
          ;; CG::write_reg(&mut self, 0)
          ;; self.push_next(label0)
          ;; self.push_next_sentinel(self.next_iter_with_search)
-         // Share at least the end with next_iter
-         ; jmp >next
+         ; mov reg1, QWORD ((self.queue_start() + ((3*ptr_size!()*self.queue_size())/2)) as i64)
+         ; mov reg2, QWORD ((self.queue_start() + ((ptr_size!()*self.queue_size())/2)) as i64)
+         ; cmp curr_top, next_tail
+         ; mov next_tail, reg2
+         ; mov curr_top, reg1
+         ; cmovg next_tail, reg1
+         ; cmovg curr_top, reg2
+         ; jmp =>self.fetch_next_char
          // Same as above, but does not spawn a new thread. Used when doing
          // anchored searches, or when an accpeting state has already been
          // reached.
@@ -481,15 +484,20 @@ impl PikeJIT {
          ; cmp input_pos, span_end
          ; je >return_result
          ; add input_pos, input_inc
-         ; mov curr_top, [rbp + (next_tail_init_offset!())]
-         // Check if next is empty
-         ; cmp curr_top, next_tail
+         ; mov reg1, QWORD ((self.queue_start() + ((3*ptr_size!()*self.queue_size())/2)) as i64)
+         ; mov reg2, QWORD ((self.queue_start() + ((ptr_size!()*self.queue_size())/2)) as i64)
+         ; cmp next_tail, reg1
+         ; je >return_result
+         ; cmp next_tail, reg2
          ; je >return_result
          ;; self.push_next_sentinel(self.next_iter)
-         ; next:
-         ; mov next_tail, [rbp + (curr_top_init_offset!())]
-         ; mov [rbp + (curr_top_init_offset!())], curr_top
-         ; mov [rbp + (next_tail_init_offset!())], next_tail
+         ; mov reg1, QWORD ((self.queue_start() + ((3*ptr_size!()*self.queue_size())/2)) as i64)
+         ; mov reg2, QWORD ((self.queue_start() + ((ptr_size!()*self.queue_size())/2)) as i64)
+         ; cmp curr_top, next_tail
+         ; mov next_tail, reg2
+         ; mov curr_top, reg1
+         ; cmovg next_tail, reg1
+         ; cmovg curr_top, reg2
          ; jmp =>self.fetch_next_char
          ; return_result:
          ;; CG::return_result(&mut self)
@@ -625,9 +633,7 @@ impl PikeJIT {
         ; sub rsp, (4*ptr_size!())
         // Initialize curr_top, next_tail and saved them on the stack for easier
         ; mov curr_top, QWORD ((self.queue_start() + ((self.queue_size() * ptr_size!())/2)) as i64)
-        ; mov QWORD [rbp + (curr_top_init_offset!())], curr_top
         ; mov next_tail, QWORD ((self.queue_start() + ((3*ptr_size!()*self.queue_size())/2)) as i64)
-        ; mov QWORD [rbp + (next_tail_init_offset!())], next_tail
         ;; CG::initialize_cg_region(self)
         )
     }
