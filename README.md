@@ -1,9 +1,10 @@
+# Warning: This is very much WIP, and bugs are expected
 # gregex
 
 **gregex** is a regular expression crate for Rust, providing multiple regex
 engines under a unified API. It aims to be fast, flexible, and consistent with
 the popular [`regex`](https://docs.rs/regex) crate, while offering alternative
-engine implementations and advanced features.
+engine implementations. In particular it can do jit-compilation.
 
 ## Features
 - **Multiple Engines:** Choose between a Pike VM interpreter and a JIT-compiled Pike VM engine for regex matching.
