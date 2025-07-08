@@ -34,7 +34,7 @@ assert!(jit_re.is_match("foobar"));
 ## Engines
 
 - `Regex::pike_vm` — Interpreted Pike VM engine.
-- `Regex::pike_jit` — JIT-compiled Pike VM engine (only available on x64-unix).
+- `Regex::pike_jit` — JIT-compiled Pike VM engine (only available on x64).
 
 ## Testing
 
